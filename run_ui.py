@@ -11,6 +11,7 @@ import threading
 from flask import Flask, request, Response, session
 from flask_basicauth import BasicAuth
 from a2wsgi import ASGIMiddleware, WSGIMiddleware
+from python.runtime.api.app import app as runtime_api_app
 import initialize
 from python.helpers import files, git, mcp_server, fasta2a_server
 from python.helpers.files import get_abs_path
@@ -236,6 +237,7 @@ def _configure_wsgi_app():
     middleware_routes = {
         "/mcp": ASGIMiddleware(app=mcp_server.DynamicMcpProxy.get_instance()),  # type: ignore
         "/a2a": ASGIMiddleware(app=fasta2a_server.DynamicA2AProxy.get_instance()),  # type: ignore
+        "/runtime": ASGIMiddleware(app=runtime_api_app),  # type: ignore
     }
 
     app = DispatcherMiddleware(webapp, middleware_routes)  # type: ignore

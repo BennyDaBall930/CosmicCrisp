@@ -300,10 +300,14 @@ A lightweight FastAPI service implementing streaming agent endpoints.
 ### Running
 
 ```
-uv run python -m cosmiccrisp.api.app
+uv run python -m python.runtime.api.app
 # or
-python -m cosmiccrisp.api.app
+python -m python.runtime.api.app
 ```
+
+When the main UI (`run_ui.py`) is launched the same FastAPI application is
+mounted under the `/runtime` prefix, exposing `/runtime/run` and
+`/runtime/chat` alongside the existing Flask endpoints.
 
 ### Examples
 

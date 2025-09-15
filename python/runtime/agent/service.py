@@ -1,7 +1,6 @@
 """Core agent loop for CosmicCrisp."""
 from __future__ import annotations
 
-import asyncio
 from typing import AsyncGenerator, Optional
 
 from .prompts import (
@@ -38,7 +37,7 @@ class AgentService:
             args={"query": goal},
             rationale="heuristic",
         )
-        yield f"ANALYZE: {analysis.json()}\n"
+        yield f"ANALYZE: {analysis.model_dump_json()}\n"
         # Execute
         tool = registry.get(analysis.chosen_tool)
         result = await tool.run(**analysis.args) if tool else "no tool"
