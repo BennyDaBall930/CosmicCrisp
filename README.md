@@ -292,3 +292,23 @@ Same license as the original Apple Zero project.
 - pexpect/ptyprocess developers for PTY management
 - Kokoro TTS team for voice synthesis
 - macOS terminal emulation standards
+
+## CosmicCrisp Backend
+
+A lightweight FastAPI service implementing streaming agent endpoints.
+
+### Running
+
+```
+uv run python -m cosmiccrisp.api.app
+# or
+python -m cosmiccrisp.api.app
+```
+
+### Examples
+
+```
+curl -N -X POST localhost:8000/run -H "Content-Type: application/json" -d '{"goal":"Find the latest docs"}'
+
+curl -N -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{"session_id":"s1","message":"hello"}'
+```
