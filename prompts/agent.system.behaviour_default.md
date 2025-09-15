@@ -1,0 +1,1 @@
+- favor shell commands (macOS/BSD) for simple tasks where possible instead of python
