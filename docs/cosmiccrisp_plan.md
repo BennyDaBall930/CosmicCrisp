@@ -5,8 +5,7 @@ Port core patterns of AgentGPT into a minimal, local-first backend named **Cosmi
 
 ## File Tree
 ```
-cosmiccrisp/
-  PLAN.md
+python/runtime/
   __init__.py
   api/
     __init__.py
@@ -39,7 +38,7 @@ cosmiccrisp/
     token_service.py     # TokenService enforcing token budgets
 
 tests/
-  cosmiccrisp/
+  cc/
     __init__.py
     test_token_service.py       # token budget edge cases
     test_task_parser.py         # invalid tool schema rejected
