@@ -5,6 +5,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
+from .agent.prompts import DEFAULT_LIBRARY_PATH
 from pathlib import Path
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
 
@@ -77,6 +78,13 @@ class ToolsConfig:
     shell_allow_list: Sequence[str] = field(default_factory=lambda: ("ls", "pwd", "cat"))
 
 
+
+
+@dataclass(slots=True)
+class PromptsConfig:
+    library_path: Path = Path(DEFAULT_LIBRARY_PATH)
+    overrides_path: Optional[Path] = None
+    extra_safety: Sequence[str] = field(default_factory=tuple)
 @dataclass(slots=True)
 class AgentConfig:
     max_loops: int = 20
@@ -92,6 +100,7 @@ class RuntimeConfig:
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     tokens: TokenConfig = field(default_factory=TokenConfig)
+    prompts: PromptsConfig = field(default_factory=PromptsConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
 

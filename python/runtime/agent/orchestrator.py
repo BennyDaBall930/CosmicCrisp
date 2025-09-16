@@ -228,7 +228,7 @@ class AgentOrchestrator:
         if memory_snippets:
             yield f"MEMORY: recalled {len(memory_snippets)} items\n"
 
-        messages = self._base_messages(goal)
+        messages = self._base_messages(goal, session)
         fitted = self.token_service.fit(messages, model or self.token_service.default_model, memory_snippets)
         yield f"CONTEXT: {self.token_service.count(fitted)} tokens after fit\n"
 
@@ -283,7 +283,7 @@ class AgentOrchestrator:
         _ = await self._embed_text(message)
         memory_items = await self._retrieve_memory(message)
         memory_snippets = [item.get("text", "") for item in memory_items if item.get("text")]
-        messages = self._base_messages(message)
+        messages = self._base_messages(message, session)
         fitted = self.token_service.fit(messages, model or self.token_service.default_model, memory_snippets)
         yield f"CONTEXT: {self.token_service.count(fitted)} tokens after fit\n"
 
@@ -313,37 +313,53 @@ class AgentOrchestrator:
             meta={"role": "user", "run_id": run_id},
         )
 
-        try:
-            started = {"type": "chat_started", "run_id": run_id, "session_id": session, "model": model}
-            yield self._format_event("event", started)
-            await self._publish_bus(started)
+        ui_prefs = getattr(request, "ui_prefs", {}) or {}
+        overrides = ui_prefs.get("prompt_overrides")
+        persona_override = ui_prefs.get("persona")
 
-            memory_items = await self._retrieve_memory(user_content)
-            if memory_items:
-                memory_payload = {"type": "memory", "items": memory_items, "run_id": run_id, "session_id": session}
-                yield self._format_event("event", memory_payload)
-                await self._publish_bus(memory_payload)
+        with self.prompt_manager.runtime_overrides(overrides):
+            with self.prompt_manager.persona_context(persona_override):
+                try:
+                    started = {"type": "chat_started", "run_id": run_id, "session_id": session, "model": model}
+                    yield self._format_event("event", started)
+                    await self._publish_bus(started)
 
-            response = f"ECHO: {user_content}" if user_content else "ACK"
-            for token in self._tokenize(response):
-                yield self._format_event("token", {"text": token, "run_id": run_id, "node_id": session, "model": model})
+                    memory_items = await self._retrieve_memory(user_content)
+                    if memory_items:
+                        memory_payload = {
+                            "type": "memory",
+                            "items": memory_items,
+                            "run_id": run_id,
+                            "session_id": session,
+                        }
+                        yield self._format_event("event", memory_payload)
+                        await self._publish_bus(memory_payload)
 
-            summary_payload = {"type": "summary", "run_id": run_id, "text": response}
-            yield self._format_event("event", summary_payload)
-            await self._publish_bus(summary_payload)
+                    response = f"ECHO: {user_content}" if user_content else "ACK"
+                    for token in self._tokenize(response):
+                        yield self._format_event(
+                            "token",
+                            {"text": token, "run_id": run_id, "node_id": session, "model": model},
+                        )
 
-            await self._log_memory(
-                session,
-                kind="decision",
-                text=response,
-                tags=[session, "assistant"],
-                meta={"role": "assistant", "run_id": run_id},
-            )
-            yield self._format_event("done", {"ok": True, "run_id": run_id})
-        except Exception as exc:
-            error_payload = {"message": str(exc), "where": "orchestrator", "run_id": run_id}
-            yield self._format_event("error", error_payload)
-            await self._publish_bus({"type": "error", **error_payload})
+                    summary_payload = {"type": "summary", "run_id": run_id, "text": response}
+                    yield self._format_event("event", summary_payload)
+                    await self._publish_bus(summary_payload)
+
+                    await self._log_memory(
+                        session,
+                        kind="decision",
+                        text=response,
+                        tags=[session, "assistant"],
+                        meta={"role": "assistant", "run_id": run_id},
+                    )
+                    yield self._format_event("done", {"ok": True, "run_id": run_id})
+                    self.prompt_manager.record_success(session, reset=True)
+                except Exception as exc:
+                    self.prompt_manager.record_failure(session)
+                    error_payload = {"message": str(exc), "where": "orchestrator", "run_id": run_id}
+                    yield self._format_event("error", error_payload)
+                    await self._publish_bus({"type": "error", **error_payload})
 
     async def stream_run(self, request: Any) -> AsyncIterator[Dict[str, Any]]:
         run_id = uuid.uuid4().hex
@@ -355,88 +371,136 @@ class AgentOrchestrator:
         await self._enter_session(session)
         await self._log_memory(session, kind="goal", text=goal, tags=["goal", session], meta={"run_id": run_id})
 
-        try:
-            start_payload = {"type": "run_started", "run_id": run_id, "session_id": session, "goal": goal, "model": model}
-            yield self._format_event("event", start_payload)
-            await self._publish_bus(start_payload)
+        ui_prefs = getattr(request, "ui_prefs", {}) or {}
+        overrides = ui_prefs.get("prompt_overrides")
+        persona_override = ui_prefs.get("persona")
 
-            memory_items = await self._retrieve_memory(goal)
-            if memory_items:
-                memory_payload = {"type": "memory", "items": memory_items, "run_id": run_id, "session_id": session}
-                yield self._format_event("event", memory_payload)
-                await self._publish_bus(memory_payload)
+        with self.prompt_manager.runtime_overrides(overrides):
+            with self.prompt_manager.persona_context(persona_override):
+                try:
+                    start_payload = {
+                        "type": "run_started",
+                        "run_id": run_id,
+                        "session_id": session,
+                        "goal": goal,
+                        "model": model,
+                    }
+                    yield self._format_event("event", start_payload)
+                    await self._publish_bus(start_payload)
 
-            planner = TaskPlanner(prompt_manager=self.prompt_manager, profile=self.config.agent.planner_profile)
-            planner.bootstrap(goal)
+                    memory_items = await self._retrieve_memory(goal)
+                    if memory_items:
+                        memory_payload = {
+                            "type": "memory",
+                            "items": memory_items,
+                            "run_id": run_id,
+                            "session_id": session,
+                        }
+                        yield self._format_event("event", memory_payload)
+                        await self._publish_bus(memory_payload)
 
-            completed: List[Task] = []
-            loop_count = 0
-            while planner.has_tasks() and loop_count < self.max_loops:
-                if cancel_event.is_set():
-                    yield self._format_event("error", {"message": "run cancelled", "where": "orchestrator", "run_id": run_id})
-                    await self._publish_bus({"type": "run_cancelled", "run_id": run_id})
-                    break
-                task = planner.next_task()
-                if task is None:
-                    break
-                loop_count += 1
-                task_start = {"type": "task_started", "task_id": task.id, "description": task.description, "run_id": run_id}
-                yield self._format_event("event", task_start)
-                await self._publish_bus(task_start)
+                    planner = TaskPlanner(prompt_manager=self.prompt_manager, profile=self.config.agent.planner_profile)
+                    planner.bootstrap(goal)
 
-                analysis = await self._analyze_task(task.description, goal)
-                tool_start = {"type": "tool_start", "tool": analysis.chosen_tool, "task_id": task.id, "run_id": run_id}
-                yield self._format_event("event", tool_start)
-                await self._publish_bus(tool_start)
+                    completed: List[Task] = []
+                    loop_count = 0
+                    while planner.has_tasks() and loop_count < self.max_loops:
+                        if cancel_event.is_set():
+                            yield self._format_event(
+                                "error",
+                                {"message": "run cancelled", "where": "orchestrator", "run_id": run_id},
+                            )
+                            await self._publish_bus({"type": "run_cancelled", "run_id": run_id})
+                            break
+                        task = planner.next_task()
+                        if task is None:
+                            break
+                        loop_count += 1
+                        task_start = {
+                            "type": "task_started",
+                            "task_id": task.id,
+                            "description": task.description,
+                            "run_id": run_id,
+                        }
+                        yield self._format_event("event", task_start)
+                        await self._publish_bus(task_start)
 
-                if analysis.chosen_tool == "browser":
-                    context_id = uuid.uuid4().hex
-                    loop = asyncio.get_running_loop()
-                    future: asyncio.Future[Any] = loop.create_future()
-                    self._hil_waits[context_id] = future
-                    hil_payload = {"type": "browser_hil_required", "session_id": session, "context_id": context_id, "task_id": task.id, "run_id": run_id}
-                    yield self._format_event("hil", hil_payload)
-                    await self._publish_bus(hil_payload)
-                    try:
-                        await future
-                    finally:
-                        self._hil_waits.pop(context_id, None)
+                        analysis = await self._analyze_task(task.description, goal)
+                        tool_start = {
+                            "type": "tool_start",
+                            "tool": analysis.chosen_tool,
+                            "task_id": task.id,
+                            "run_id": run_id,
+                        }
+                        yield self._format_event("event", tool_start)
+                        await self._publish_bus(tool_start)
 
-                result = await self._execute_task(session, task, analysis, [], depth=0)
+                        if analysis.chosen_tool == "browser":
+                            context_id = uuid.uuid4().hex
+                            loop = asyncio.get_running_loop()
+                            future: asyncio.Future[Any] = loop.create_future()
+                            self._hil_waits[context_id] = future
+                            hil_payload = {
+                                "type": "browser_hil_required",
+                                "session_id": session,
+                                "context_id": context_id,
+                                "task_id": task.id,
+                                "run_id": run_id,
+                            }
+                            yield self._format_event("hil", hil_payload)
+                            await self._publish_bus(hil_payload)
+                            try:
+                                await future
+                            finally:
+                                self._hil_waits.pop(context_id, None)
 
-                tool_end = {"type": "tool_end", "tool": analysis.chosen_tool, "task_id": task.id, "run_id": run_id}
-                yield self._format_event("event", tool_end)
-                await self._publish_bus(tool_end)
+                        result = await self._execute_task(session, task, analysis, [], depth=0)
 
-                for token in self._tokenize(result):
-                    yield self._format_event("token", {"text": token, "run_id": run_id, "node_id": task.id, "model": model})
-                task.status = "completed"
-                task.result = result
-                completed.append(task)
-                planner.consider_followups(task, result)
+                        tool_end = {
+                            "type": "tool_end",
+                            "tool": analysis.chosen_tool,
+                            "task_id": task.id,
+                            "run_id": run_id,
+                        }
+                        yield self._format_event("event", tool_end)
+                        await self._publish_bus(tool_end)
 
-            summary = self._summarize(goal, completed)
-            summary_payload = {"type": "summary", "run_id": run_id, "text": summary}
-            yield self._format_event("event", summary_payload)
-            await self._publish_bus(summary_payload)
-            await self._log_memory(
-                session,
-                kind="summary",
-                text=summary,
-                tags=["summary", session],
-                meta={"run_id": run_id, "goal": goal},
-            )
-            yield self._format_event("done", {"ok": True, "run_id": run_id})
-        except Exception as exc:
-            error_payload = {"message": str(exc), "where": "orchestrator", "run_id": run_id}
-            yield self._format_event("error", error_payload)
-            await self._publish_bus({"type": "error", **error_payload})
-        finally:
-            self._active_runs.pop(run_id, None)
+                        for token in self._tokenize(result):
+                            yield self._format_event(
+                                "token",
+                                {"text": token, "run_id": run_id, "node_id": task.id, "model": model},
+                            )
+                        task.status = "completed"
+                        task.result = result
+                        completed.append(task)
+                        planner.consider_followups(task, result)
+
+                    summary = self._summarize(goal, completed)
+                    summary_payload = {"type": "summary", "run_id": run_id, "text": summary}
+                    yield self._format_event("event", summary_payload)
+                    await self._publish_bus(summary_payload)
+                    await self._log_memory(
+                        session,
+                        kind="summary",
+                        text=summary,
+                        tags=["summary", session],
+                        meta={"run_id": run_id, "goal": goal},
+                    )
+                    yield self._format_event("done", {"ok": True, "run_id": run_id})
+                    self.prompt_manager.record_success(session, reset=True)
+                except Exception as exc:
+                    self.prompt_manager.record_failure(session)
+                    error_payload = {"message": str(exc), "where": "orchestrator", "run_id": run_id}
+                    yield self._format_event("error", error_payload)
+                    await self._publish_bus({"type": "error", **error_payload})
+                finally:
+                    self._active_runs.pop(run_id, None)
 
     # ------------------------------------------------------------------
-    def _base_messages(self, content: str) -> List[Dict[str, str]]:
-        system_prompt = self.prompt_manager.get_prompt(self.config.agent.execution_profile, "system")
+    def _base_messages(self, content: str, session: str) -> List[Dict[str, str]]:
+        system_prompt = self.prompt_manager.get_prompt(
+            self.config.agent.execution_profile, "system", session=session, variables={"session_id": session}
+        )
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
@@ -490,6 +554,10 @@ class AgentOrchestrator:
             tags=[session, clean_analysis.chosen_tool, "result"],
             meta={"task": task.description, "tool": clean_analysis.chosen_tool},
         )
+        if isinstance(result, str) and result.startswith("tool-error"):
+            self.prompt_manager.record_failure(session, tool=clean_analysis.chosen_tool)
+        else:
+            self.prompt_manager.record_success(session)
         return result
 
     async def _invoke_tool(self, session: str, analysis: AnalyzeOutput) -> str:
@@ -501,6 +569,7 @@ class AgentOrchestrator:
             result = await tool.run(**analysis.args)
         except Exception as exc:  # pragma: no cover
             logger.error("Tool '%s' failed: %s", analysis.chosen_tool, exc)
+            self.prompt_manager.record_failure(session, tool=analysis.chosen_tool)
             result = f"tool-error: {exc}"
         return str(result)
 
