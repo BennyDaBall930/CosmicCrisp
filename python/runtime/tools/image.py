@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import Tool
+from .registry import register_tool
 
 
 class ImageTool(Tool):
@@ -13,6 +14,4 @@ class ImageTool(Tool):
         return "image-generation-not-implemented"
 
 
-from .registry import registry
-
-registry.register(ImageTool())
+register_tool(ImageTool)

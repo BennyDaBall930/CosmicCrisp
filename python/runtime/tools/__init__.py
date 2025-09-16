@@ -1,14 +1,17 @@
 """Unified tool registry for the runtime."""
-
 from __future__ import annotations
 
-from .registry import registry
+import importlib
+from typing import Any
 
-# Import default tools to ensure they are registered on package import
-from . import browser  # noqa: F401  # pylint: disable=unused-import
-from . import code  # noqa: F401  # pylint: disable=unused-import
-from . import image  # noqa: F401  # pylint: disable=unused-import
-from . import search  # noqa: F401  # pylint: disable=unused-import
+_EXPORTS = {"registry", "ToolRegistry", "ToolEntry", "register_tool"}
 
-__all__ = ["registry"]
 
+def __getattr__(name: str) -> Any:
+    if name in _EXPORTS:
+        module = importlib.import_module('.registry', __name__)
+        return getattr(module, name)
+    raise AttributeError(name)
+
+
+__all__ = sorted(_EXPORTS)

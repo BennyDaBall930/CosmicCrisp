@@ -316,3 +316,10 @@ curl -N -X POST localhost:8000/run -H "Content-Type: application/json" -d '{"goa
 
 curl -N -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{"session_id":"s1","message":"hello"}'
 ```
+
+### Runtime HTTP API
+- Streaming endpoints now live under `/runtime/chat` and `/runtime/run` (SSE).
+- `/runtime/events` streams system and human-in-the-loop events for the Web UI sidebar.
+- Admin utilities: `/runtime/admin/memory`, `/runtime/admin/health`, and run cancel/resume endpoints.
+- Tool metadata is available via `/runtime/tools`; simple tools can be invoked through `/runtime/tools/invoke`.
+- Browser interventions publish `browser_hil_required` events; resume with `POST /runtime/browser/continue`.

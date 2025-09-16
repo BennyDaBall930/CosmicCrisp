@@ -1,51 +1,53 @@
-"""Core agent loop for CosmicCrisp."""
+"""High-level agent service delegating to the orchestrator."""
 from __future__ import annotations
 
 from typing import AsyncGenerator, Optional
 
-from .prompts import (
-    analyze_task_prompt,
-    create_tasks_prompt,
-    start_goal_prompt,
-    summarize_prompt,
-)
-from .task_parser import AnalyzeOutput
+from ..config import RuntimeConfig, load_runtime_config
+from ..embeddings import Embeddings
 from ..memory.interface import AgentMemory
 from ..memory.null import NullMemory
-from ..tools.registry import registry
 from ..tokenizer.token_service import TokenService
+from ..tools.registry import ToolRegistry, registry as default_registry
+from .orchestrator import AgentOrchestrator
+from .prompt_manager import PromptManager
 
 
 class AgentService:
-    """High level interface driving the agent loop."""
+    """Surface area for launching the agent loop."""
 
     def __init__(
         self,
         memory: Optional[AgentMemory] = None,
         token_service: Optional[TokenService] = None,
+        tool_registry: Optional[ToolRegistry] = None,
+        config: Optional[RuntimeConfig] = None,
+        orchestrator: Optional[AgentOrchestrator] = None,
+        prompt_manager: Optional[PromptManager] = None,
+        embeddings: Optional[Embeddings] = None,
+        model_router: Optional[object] = None,
     ) -> None:
+        self.config = config or load_runtime_config()
         self.memory = memory or NullMemory()
-        self.token_service = token_service or TokenService()
+        self.token_service = token_service or TokenService(self.config)
+        self.tool_registry = tool_registry or default_registry
+        self.prompt_manager = prompt_manager or PromptManager(persona=self.config.agent.persona)
+        self.embeddings = embeddings
+        self.model_router = model_router
+        self.orchestrator = orchestrator or AgentOrchestrator(
+            memory=self.memory,
+            token_service=self.token_service,
+            tool_registry=self.tool_registry,
+            config=self.config,
+            prompt_manager=self.prompt_manager,
+            embeddings=self.embeddings,
+            model_router=self.model_router,
+        )
 
     async def run(self, goal: str) -> AsyncGenerator[str, None]:
-        """Run the agent loop for a single goal, streaming text chunks."""
-        yield f"START: {goal}\n"
-        # Analyze step – naive heuristic for demo purposes
-        tool_name = "search" if "search" in goal.lower() or "find" in goal.lower() else "code"
-        analysis = AnalyzeOutput(
-            chosen_tool=tool_name,
-            args={"query": goal},
-            rationale="heuristic",
-        )
-        yield f"ANALYZE: {analysis.model_dump_json()}\n"
-        # Execute
-        tool = registry.get(analysis.chosen_tool)
-        result = await tool.run(**analysis.args) if tool else "no tool"
-        await self.memory.add({"goal": goal, "result": result})
-        yield f"EXECUTE: {result}\n"
-        yield "SUMMARIZE: done\n"
+        async for chunk in self.orchestrator.run_goal(goal):
+            yield chunk
 
     async def chat(self, session_id: str, message: str) -> AsyncGenerator[str, None]:
-        await self.memory.enter(session_id)
-        await self.memory.add({"message": message})
-        yield f"ECHO: {message}\n"
+        async for chunk in self.orchestrator.chat(session_id, message):
+            yield chunk

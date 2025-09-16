@@ -1,13 +1,34 @@
 """Unified Apple Zero runtime package.
 
-The CosmicCrisp prototype has been merged into this namespace so the rest of
-the application can import the agent loop, FastAPI app, memory layer, tools,
-and token management utilities from a single location.
+Phase 1 of the consolidation exposes container-managed singletons so the rest
+of the application can resolve embeddings, memory, tokens, and tools from a
+single place.
 """
 
+from .agent.prompt_manager import PromptManager
 from .agent.service import AgentService
+from .container import (
+    embeddings,
+    get_config,
+    get_embeddings_service,
+    get_memory_store,
+    get_token_service,
+    memory,
+    tokens,
+    tool_registry,
+)
 from .tokenizer.token_service import TokenService
-from .tools import registry as tool_registry
 
-__all__ = ["AgentService", "TokenService", "tool_registry"]
-
+__all__ = [
+    "AgentService",
+    "PromptManager",
+    "TokenService",
+    "embeddings",
+    "memory",
+    "tokens",
+    "tool_registry",
+    "get_config",
+    "get_embeddings_service",
+    "get_memory_store",
+    "get_token_service",
+]
