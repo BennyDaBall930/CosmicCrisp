@@ -137,6 +137,23 @@ class SQLiteFAISSMemory(AgentMemory, MemoryStore):
     async def count(self) -> int:
         return await asyncio.to_thread(self._count_session, self._session)
 
+    async def reindex(self) -> None:
+        if self._embeddings is None:
+            logger.info("Reindex skipped: embeddings service unavailable")
+            return
+        rows = await asyncio.to_thread(self._fetch_all_rows)
+        if not rows:
+            return
+        texts = [text for _, text in rows]
+        vectors = await self._embeddings.embed(texts)
+        if len(vectors) != len(rows):
+            raise RuntimeError("Embedding count mismatch during reindex")
+        updates = []
+        for (item_id, _), vector in zip(rows, vectors):
+            vector_norm = math.sqrt(sum(v * v for v in vector))
+            updates.append((_vector_to_blob(vector), vector_norm, item_id))
+        await asyncio.to_thread(self._bulk_update_vectors, updates)
+
     # Internal helpers -------------------------------------------------------
     def _insert(self, payload: Sequence) -> None:
         with self._lock:
@@ -189,6 +206,22 @@ class SQLiteFAISSMemory(AgentMemory, MemoryStore):
             cur = self._conn.execute("SELECT COUNT(*) FROM memory WHERE session=?", (session,))
             (count,) = cur.fetchone()
         return int(count)
+
+    def _fetch_all_rows(self) -> List[tuple[str, str]]:
+        with self._lock:
+            cur = self._conn.execute("SELECT id, text FROM memory")
+            rows = cur.fetchall()
+        return [(str(item_id), str(text)) for item_id, text in rows]
+
+    def _bulk_update_vectors(self, updates: Sequence[tuple[bytes, float, str]]) -> None:
+        if not updates:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "UPDATE memory SET vector=?, vector_norm=? WHERE id=?",
+                updates,
+            )
+            self._conn.commit()
 
     def _row_to_item(self, row: Sequence) -> tuple[MemoryItem, List[float], float]:
         (

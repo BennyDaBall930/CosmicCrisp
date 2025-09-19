@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from .agent.prompts import DEFAULT_LIBRARY_PATH
 from pathlib import Path
-from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, List
 
 try:  # Python 3.11+
     import tomllib
@@ -78,13 +78,22 @@ class ToolsConfig:
     shell_allow_list: Sequence[str] = field(default_factory=lambda: ("ls", "pwd", "cat"))
 
 
-
-
 @dataclass(slots=True)
 class PromptsConfig:
     library_path: Path = Path(DEFAULT_LIBRARY_PATH)
     overrides_path: Optional[Path] = None
     extra_safety: Sequence[str] = field(default_factory=tuple)
+
+
+@dataclass(slots=True)
+class ObservabilityConfig:
+    helicone_enabled: bool = False
+    helicone_base_url: Optional[str] = None
+    helicone_api_key: Optional[str] = None
+    json_log_path: Optional[Path] = Path("./logs/runtime_observability.jsonl")
+    metrics_namespace: str = "apple_zero"
+
+
 @dataclass(slots=True)
 class AgentConfig:
     max_loops: int = 20
@@ -96,13 +105,38 @@ class AgentConfig:
 
 
 @dataclass(slots=True)
+class RouterModelConfig:
+    name: str
+    provider: str = "openai"
+    priority: int = 10
+    max_context: int = 0
+    cost_per_1k: float = 0.0
+    latency: str = "medium"
+    capabilities: Sequence[str] = field(default_factory=tuple)
+    tags: Sequence[str] = field(default_factory=tuple)
+    is_local: bool = False
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class RouterConfig:
+    default_model: str = "gpt-4o"
+    default_strategy: str = "balanced"
+    strategy_overrides: Dict[str, str] = field(default_factory=dict)
+    models: Sequence[RouterModelConfig] = field(default_factory=tuple)
+
+
+
+@dataclass(slots=True)
 class RuntimeConfig:
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     tokens: TokenConfig = field(default_factory=TokenConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    router: RouterConfig = field(default_factory=RouterConfig)
 
 
 def _load_config_file() -> Dict[str, Any]:
@@ -228,6 +262,43 @@ def _parse_list(value: Any, default: Sequence[str]) -> Sequence[str]:
     )
 
 
+
+
+def _parse_router_models(entries: Any) -> Sequence[RouterModelConfig]:
+    models: List[RouterModelConfig] = []
+    if not isinstance(entries, Sequence):
+        return tuple(models)
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            continue
+        metadata = entry.get("metadata")
+        models.append(
+            RouterModelConfig(
+                name=name,
+                provider=str(entry.get("provider", "openai") or "openai").strip() or "openai",
+                priority=_as_int(entry.get("priority"), 10),
+                max_context=_as_int(entry.get("max_context"), 0),
+                cost_per_1k=_as_float(
+                    entry.get("cost_per_1k", entry.get("cost", 0.0)),
+                    0.0,
+                ),
+                latency=str(entry.get("latency", "medium") or "medium").strip().lower(),
+                capabilities=_parse_list(entry.get("capabilities"), ()),
+                tags=_parse_list(entry.get("tags"), ()),
+                is_local=_as_bool(entry.get("is_local"), False),
+                metadata={
+                    str(k): str(v)
+                    for k, v in metadata.items()
+                }
+                if isinstance(metadata, Mapping)
+                else {},
+            )
+        )
+    return tuple(models)
+
 @lru_cache(maxsize=1)
 def load_runtime_config() -> RuntimeConfig:
     settings = _load_config_file()
@@ -307,6 +378,33 @@ def load_runtime_config() -> RuntimeConfig:
         or None,
     )
 
+    prompts = PromptsConfig(
+        library_path=Path(
+            env.get(
+                "PROMPTS_LIBRARY_PATH",
+                _lookup(settings, "prompts", "library_path", default=str(DEFAULT_LIBRARY_PATH)),
+            )
+        ).expanduser(),
+        overrides_path=(
+            Path(
+                env.get(
+                    "PROMPTS_OVERRIDES_PATH",
+                    _lookup(settings, "prompts", "overrides_path", default=""),
+                )
+            ).expanduser()
+            if env.get("PROMPTS_OVERRIDES_PATH")
+            or _lookup(settings, "prompts", "overrides_path")
+            else None
+        ),
+        extra_safety=_parse_list(
+            env.get(
+                "PROMPTS_EXTRA_SAFETY",
+                _lookup(settings, "prompts", "extra_safety", default=()),
+            ),
+            (),
+        ),
+    )
+
     agent = AgentConfig(
         max_loops=_as_int(
             env.get("AGENT_MAX_LOOPS", _lookup(settings, "agent", "max_loops", default=20)),
@@ -375,12 +473,111 @@ def load_runtime_config() -> RuntimeConfig:
         ),
     )
 
+    json_log_setting = env.get(
+        "OBSERVABILITY_LOG_PATH",
+        _lookup(settings, "observability", "json_log_path", default="./logs/runtime_observability.jsonl"),
+    )
+    json_log_path: Optional[Path]
+    if json_log_setting is None:
+        json_log_path = None
+    else:
+        if isinstance(json_log_setting, Path):
+            candidate = str(json_log_setting)
+        else:
+            candidate = str(json_log_setting).strip()
+        if candidate.lower() in {"", "none", "null", "disable", "disabled"}:
+            json_log_path = None
+        else:
+            json_log_path = Path(candidate).expanduser()
+
+    observability = ObservabilityConfig(
+        helicone_enabled=_as_bool(
+            env.get(
+                "HELICONE_ENABLED",
+                _lookup(settings, "observability", "helicone_enabled", default=False),
+            ),
+            False,
+        ),
+        helicone_base_url=(
+            str(
+                env.get(
+                    "HELICONE_BASE_URL",
+                    _lookup(settings, "observability", "helicone_base_url", default=""),
+                )
+            ).strip()
+            or None
+        ),
+        helicone_api_key=(
+            str(
+                env.get(
+                    "HELICONE_API_KEY",
+                    _lookup(settings, "observability", "helicone_api_key", default=""),
+                )
+            ).strip()
+            or None
+        ),
+        json_log_path=json_log_path,
+        metrics_namespace=str(
+            env.get(
+                "OBSERVABILITY_METRICS_NS",
+                _lookup(settings, "observability", "metrics_namespace", default="apple_zero"),
+            )
+        ).strip()
+        or "apple_zero",
+    )
+
+    raw_router_models = _lookup(settings, "router", "models", default=())
+    env_router_models = env.get("ROUTER_MODELS")
+    if env_router_models:
+        try:
+            parsed_models = json.loads(env_router_models)
+        except json.JSONDecodeError:
+            parsed_models = ()
+        if parsed_models:
+            raw_router_models = parsed_models
+    router_models = _parse_router_models(raw_router_models)
+
+    strategy_overrides: Dict[str, str] = {}
+    raw_strategy_overrides = _lookup(settings, "router", "strategy_overrides", default={})
+    if isinstance(raw_strategy_overrides, Mapping):
+        strategy_overrides.update({str(k).lower(): str(v).lower() for k, v in raw_strategy_overrides.items()})
+    env_strategy_overrides = env.get("ROUTER_STRATEGY_OVERRIDES")
+    if env_strategy_overrides:
+        try:
+            parsed_overrides = json.loads(env_strategy_overrides)
+        except json.JSONDecodeError:
+            parsed_overrides = None
+        if isinstance(parsed_overrides, Mapping):
+            strategy_overrides.update({str(k).lower(): str(v).lower() for k, v in parsed_overrides.items()})
+
+    router = RouterConfig(
+        default_model=str(
+            env.get(
+                "ROUTER_DEFAULT_MODEL",
+                _lookup(settings, "router", "default_model", default="gpt-4o"),
+            )
+        ).strip()
+        or "gpt-4o",
+        default_strategy=str(
+            env.get(
+                "ROUTER_DEFAULT_STRATEGY",
+                _lookup(settings, "router", "default_strategy", default="balanced"),
+            )
+        ).strip()
+        or "balanced",
+        strategy_overrides=strategy_overrides,
+        models=router_models,
+    )
+
     return RuntimeConfig(
         embeddings=embeddings,
         memory=memory,
         tokens=tokens,
+        prompts=prompts,
+        observability=observability,
         agent=agent,
         tools=tools,
+        router=router,
     )
 
 
@@ -389,8 +586,11 @@ __all__ = [
     "MemoryConfig",
     "RuntimeConfig",
     "TokenConfig",
+    "PromptsConfig",
     "ToolsConfig",
     "AgentConfig",
+    "RouterModelConfig",
+    "RouterConfig",
     "DEFAULT_TOKEN_BUDGETS",
     "load_runtime_config",
 ]

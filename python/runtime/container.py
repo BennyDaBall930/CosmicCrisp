@@ -73,8 +73,28 @@ def get_tool_registry():
 @lru_cache(maxsize=1)
 def get_prompt_manager():
     from .agent.prompt_manager import PromptManager
+    cfg = get_config()
+    prompts_cfg = cfg.prompts
+    return PromptManager(
+        library_path=prompts_cfg.library_path,
+        override_path=prompts_cfg.overrides_path,
+        persona=cfg.agent.persona,
+        extra_safety=prompts_cfg.extra_safety,
+    )
 
-    return PromptManager(persona=get_config().agent.persona)
+
+@lru_cache(maxsize=1)
+def get_observability():
+    from .observability import Observability
+
+    return Observability(get_config().observability)
+
+
+@lru_cache(maxsize=1)
+def get_model_router():
+    from .model.router import ModelRouter
+
+    return ModelRouter(get_config().router, observability=get_observability())
 
 
 @lru_cache(maxsize=1)
@@ -89,6 +109,8 @@ def get_orchestrator():
         prompt_manager=get_prompt_manager(),
         embeddings=get_embeddings_service(),
         event_bus=get_event_bus(),
+        observability=get_observability(),
+        model_router=get_model_router(),
     )
 
 
@@ -104,6 +126,8 @@ def get_agent_service():
         orchestrator=get_orchestrator(),
         prompt_manager=get_prompt_manager(),
         embeddings=get_embeddings_service(),
+        observability=get_observability(),
+        model_router=get_model_router(),
     )
 
 
@@ -114,6 +138,8 @@ tool_registry = get_tool_registry
 event_bus = _LazyProxy(get_event_bus)
 orchestrator = _LazyProxy(get_orchestrator)
 agent_service = _LazyProxy(get_agent_service)
+observability = _LazyProxy(get_observability)
+model_router = _LazyProxy(get_model_router)
 
 
 __all__ = [
@@ -124,6 +150,8 @@ __all__ = [
     "event_bus",
     "orchestrator",
     "agent_service",
+    "observability",
+    "model_router",
     "get_config",
     "get_embeddings_service",
     "get_memory_store",
@@ -133,4 +161,6 @@ __all__ = [
     "get_orchestrator",
     "get_agent_service",
     "get_prompt_manager",
+    "get_observability",
+    "get_model_router",
 ]

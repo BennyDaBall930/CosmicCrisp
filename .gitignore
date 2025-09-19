@@ -12,6 +12,7 @@
 
 # Ignore all contents of the virtual environment directory
 venv/
+.qa-venv/
 
 # Handle memory directory
 memory/**
@@ -32,6 +33,14 @@ logs/*.pid
 logs/chrome_debug.log
 logs/ui.log
 logs/searxng.log
+
+# Node and build artifacts
+node_modules/
+package-lock.json
+reports/
+.coverage
+.pytest_cache/
+.hypothesis/
 
 # Handle knowledge directory
 knowledge/**

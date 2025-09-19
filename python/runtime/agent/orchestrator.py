@@ -14,6 +14,7 @@ from ..embeddings import Embeddings
 from ..event_bus import EventBus
 from ..memory import MemoryStore
 from ..memory.schema import MemoryItem
+from ..observability import Observability
 from ..tokenizer.token_service import TokenService
 from ..tools.registry import ToolRegistry, registry as default_registry
 from .prompt_manager import PromptManager
@@ -106,6 +107,7 @@ class SubAgentManager:
         tool_registry: ToolRegistry,
         max_depth: int,
         timeout: float,
+        observability: Optional[Observability] = None,
     ) -> None:
         self.memory = memory
         self.token_service = token_service
@@ -113,6 +115,7 @@ class SubAgentManager:
         self.tool_registry = tool_registry
         self.max_depth = max_depth
         self.timeout = timeout
+        self.observability = observability
 
     def should_spawn(self, tool_name: str) -> bool:
         return tool_name in {"browser", "code"}
@@ -125,16 +128,33 @@ class SubAgentManager:
         task: Task,
         analysis: AnalyzeOutput,
         orchestrator: "AgentOrchestrator",
+        run_id: Optional[str] = None,
     ) -> str:
         if depth >= self.max_depth:
-            return await orchestrator._invoke_tool(parent_session, analysis)
+            return await orchestrator._invoke_tool(
+                parent_session,
+                analysis,
+                run_id=run_id,
+                task_id=task.id,
+            )
+        if self.observability:
+            self.observability.record_subagent_spawn(
+                tool=analysis.chosen_tool,
+                depth=depth + 1,
+                parent_session=parent_session,
+            )
         sub_session = f"{parent_session}::sub-{analysis.chosen_tool}-{uuid.uuid4().hex[:4]}"
         enter = getattr(self.memory, "enter", None)
         if enter:
             await enter(sub_session)
         try:
             return await asyncio.wait_for(
-                orchestrator._invoke_tool(sub_session, analysis),
+                orchestrator._invoke_tool(
+                    sub_session,
+                    analysis,
+                    run_id=run_id,
+                    task_id=task.id,
+                ),
                 timeout=self.timeout,
             )
         finally:
@@ -154,6 +174,7 @@ class AgentOrchestrator:
         embeddings: Optional[Embeddings] = None,
         model_router: Optional[Any] = None,
         event_bus: Optional[EventBus] = None,
+        observability: Optional[Observability] = None,
     ) -> None:
         self.config = config or load_runtime_config()
         self.memory = memory
@@ -163,6 +184,7 @@ class AgentOrchestrator:
         self.prompt_manager = prompt_manager or PromptManager(persona=self.config.agent.persona)
         self.model_router = model_router
         self.event_bus = event_bus
+        self.observability = observability
         self.memory_top_k = self.config.memory.top_k
         self.max_loops = self.config.agent.max_loops
         self.subagents = SubAgentManager(
@@ -172,6 +194,7 @@ class AgentOrchestrator:
             tool_registry=self.tool_registry,
             max_depth=self.config.agent.subagent_max_depth,
             timeout=self.config.agent.subagent_timeout,
+            observability=self.observability,
         )
         self._active_runs: Dict[str, asyncio.Event] = {}
         self._hil_waits: Dict[str, asyncio.Future[Any]] = {}
@@ -218,49 +241,102 @@ class AgentOrchestrator:
         model: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         session = session_id or f"goal:{uuid.uuid4().hex[:8]}"
-        await self._enter_session(session)
-        await self._log_memory(session, kind="goal", text=goal, tags=["goal"], meta={"goal": goal})
-        yield f"START: {goal}\n"
+        run_id = uuid.uuid4().hex
+        model_name = model or self.token_service.default_model
+        if self.observability:
+            self.observability.record_run_started(
+                run_type="goal",
+                run_id=run_id,
+                session=session,
+                goal=goal,
+                model=model_name,
+            )
+        success = False
+        try:
+            await self._enter_session(session)
+            await self._log_memory(session, kind="goal", text=goal, tags=["goal"], meta={"goal": goal, "run_id": run_id})
+            yield f"START: {goal}\n"
 
-        _ = await self._embed_text(goal)
-        memory_items = await self._retrieve_memory(goal)
-        memory_snippets = [item.get("text", "") for item in memory_items if item.get("text")]
-        if memory_snippets:
-            yield f"MEMORY: recalled {len(memory_snippets)} items\n"
+            _ = await self._embed_text(goal)
+            memory_items = await self._retrieve_memory(goal, session=session)
+            memory_snippets = [item.get("text", "") for item in memory_items if item.get("text")]
+            if memory_snippets:
+                yield f"MEMORY: recalled {len(memory_snippets)} items\n"
 
-        messages = self._base_messages(goal, session)
-        fitted = self.token_service.fit(messages, model or self.token_service.default_model, memory_snippets)
-        yield f"CONTEXT: {self.token_service.count(fitted)} tokens after fit\n"
+            messages = self._base_messages(goal, session)
+            fitted = self.token_service.fit(messages, model_name, memory_snippets)
+            token_count = self.token_service.count(fitted)
+            yield f"CONTEXT: {token_count} tokens after fit\n"
+            if self.observability:
+                self.observability.record_token_usage(model=model_name, tokens=token_count, run_id=run_id)
 
-        planner = TaskPlanner(prompt_manager=self.prompt_manager, profile=self.config.agent.planner_profile)
-        planner.bootstrap(goal)
+            planner = TaskPlanner(prompt_manager=self.prompt_manager, profile=self.config.agent.planner_profile)
+            planner.bootstrap(goal)
 
-        completed: List[Task] = []
-        loop_count = 0
-        while planner.has_tasks() and loop_count < self.max_loops:
-            task = planner.next_task()
-            if task is None:
-                break
-            loop_count += 1
-            yield f"TASK[{task.id}]: {task.description}\n"
-            analysis = await self._analyze_task(task.description, goal)
-            yield f"ANALYZE[{task.id}]: {analysis.model_dump_json()}\n"
-            result = await self._execute_task(session, task, analysis, memory_snippets, depth=0)
-            task.status = "completed"
-            task.result = result
-            completed.append(task)
-            yield f"RESULT[{task.id}]: {result}\n"
-            planner.consider_followups(task, result)
+            completed: List[Task] = []
+            loop_count = 0
+            while planner.has_tasks() and loop_count < self.max_loops:
+                task = planner.next_task()
+                if task is None:
+                    break
+                loop_count += 1
+                yield f"TASK[{task.id}]: {task.description}\n"
+                if self.observability:
+                    self.observability.record_task_started(
+                        run_id=run_id,
+                        task_id=task.id,
+                        owner=session,
+                        description=task.description,
+                    )
+                analysis = await self._analyze_task(task.description, goal)
+                yield f"ANALYZE[{task.id}]: {analysis.model_dump_json()}\n"
+                result = await self._execute_task(
+                    session,
+                    task,
+                    analysis,
+                    memory_snippets,
+                    depth=0,
+                    run_id=run_id,
+                )
+                task.status = "completed"
+                task.result = result
+                completed.append(task)
+                yield f"RESULT[{task.id}]: {result}\n"
+                if self.observability:
+                    self.observability.record_task_completed(
+                        run_id=run_id,
+                        task_id=task.id,
+                        owner=session,
+                        result=self._clip_text(result),
+                    )
+                planner.consider_followups(task, result)
 
-        summary = self._summarize(goal, completed)
-        await self._log_memory(
-            session,
-            kind="summary",
-            text=summary,
-            tags=["summary", session],
-            meta={"goal": goal, "completed_tasks": [task.id for task in completed]},
-        )
-        yield summary + "\n"
+            summary = self._summarize(goal, completed)
+            await self._log_memory(
+                session,
+                kind="summary",
+                text=summary,
+                tags=["summary", session],
+                meta={"goal": goal, "completed_tasks": [task.id for task in completed], "run_id": run_id},
+            )
+            yield summary + "\n"
+            success = True
+        except Exception as exc:
+            if self.observability:
+                self.observability.record_run_failed(
+                    run_type="goal",
+                    run_id=run_id,
+                    session=session,
+                    error=str(exc),
+                )
+            raise
+        finally:
+            if self.observability and success:
+                self.observability.record_run_completed(
+                    run_type="goal",
+                    run_id=run_id,
+                    session=session,
+                )
 
     # ------------------------------------------------------------------
     async def chat(
@@ -271,32 +347,64 @@ class AgentOrchestrator:
         model: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         session = session_id or f"chat:{uuid.uuid4().hex[:6]}"
-        await self._enter_session(session)
-        await self._log_memory(
-            session,
-            kind="message",
-            text=message,
-            tags=[session, "user"],
-            meta={"role": "user"},
-        )
+        run_id = uuid.uuid4().hex
+        model_name = model or self.token_service.default_model
+        if self.observability:
+            self.observability.record_run_started(
+                run_type="chat",
+                run_id=run_id,
+                session=session,
+                goal=message,
+                model=model_name,
+            )
+        success = False
+        try:
+            await self._enter_session(session)
+            await self._log_memory(
+                session,
+                kind="message",
+                text=message,
+                tags=[session, "user"],
+                meta={"role": "user", "run_id": run_id},
+            )
 
-        _ = await self._embed_text(message)
-        memory_items = await self._retrieve_memory(message)
-        memory_snippets = [item.get("text", "") for item in memory_items if item.get("text")]
-        messages = self._base_messages(message, session)
-        fitted = self.token_service.fit(messages, model or self.token_service.default_model, memory_snippets)
-        yield f"CONTEXT: {self.token_service.count(fitted)} tokens after fit\n"
+            _ = await self._embed_text(message)
+            memory_items = await self._retrieve_memory(message, session=session)
+            memory_snippets = [item.get("text", "") for item in memory_items if item.get("text")]
+            messages = self._base_messages(message, session)
+            fitted = self.token_service.fit(messages, model_name, memory_snippets)
+            token_count = self.token_service.count(fitted)
+            yield f"CONTEXT: {token_count} tokens after fit\n"
+            if self.observability:
+                self.observability.record_token_usage(model=model_name, tokens=token_count, run_id=run_id)
 
-        response = f"ECHO: {message}"
-        await self._log_memory(
-            session,
-            kind="decision",
-            text=response,
-            tags=[session, "assistant"],
-            meta={"role": "assistant"},
-        )
+            response = f"ECHO: {message}"
+            await self._log_memory(
+                session,
+                kind="decision",
+                text=response,
+                tags=[session, "assistant"],
+                meta={"role": "assistant", "run_id": run_id},
+            )
 
-        yield response + "\n"
+            yield response + "\n"
+            success = True
+        except Exception as exc:
+            if self.observability:
+                self.observability.record_run_failed(
+                    run_type="chat",
+                    run_id=run_id,
+                    session=session,
+                    error=str(exc),
+                )
+            raise
+        finally:
+            if self.observability and success:
+                self.observability.record_run_completed(
+                    run_type="chat",
+                    run_id=run_id,
+                    session=session,
+                )
 
     async def stream_chat(self, request: Any) -> AsyncIterator[Dict[str, Any]]:
         run_id = uuid.uuid4().hex
@@ -313,18 +421,28 @@ class AgentOrchestrator:
             meta={"role": "user", "run_id": run_id},
         )
 
+        if self.observability:
+            self.observability.record_run_started(
+                run_type="chat_stream",
+                run_id=run_id,
+                session=session,
+                goal=user_content,
+                model=model,
+            )
+
         ui_prefs = getattr(request, "ui_prefs", {}) or {}
         overrides = ui_prefs.get("prompt_overrides")
         persona_override = ui_prefs.get("persona")
 
         with self.prompt_manager.runtime_overrides(overrides):
             with self.prompt_manager.persona_context(persona_override):
+                completed = False
                 try:
                     started = {"type": "chat_started", "run_id": run_id, "session_id": session, "model": model}
                     yield self._format_event("event", started)
                     await self._publish_bus(started)
 
-                    memory_items = await self._retrieve_memory(user_content)
+                    memory_items = await self._retrieve_memory(user_content, session=session)
                     if memory_items:
                         memory_payload = {
                             "type": "memory",
@@ -353,13 +471,34 @@ class AgentOrchestrator:
                         tags=[session, "assistant"],
                         meta={"role": "assistant", "run_id": run_id},
                     )
+                    if self.observability:
+                        self.observability.record_token_usage(
+                            model=model,
+                            tokens=self.token_service.count(response),
+                            run_id=run_id,
+                        )
                     yield self._format_event("done", {"ok": True, "run_id": run_id})
+                    completed = True
                     self.prompt_manager.record_success(session, reset=True)
                 except Exception as exc:
                     self.prompt_manager.record_failure(session)
                     error_payload = {"message": str(exc), "where": "orchestrator", "run_id": run_id}
                     yield self._format_event("error", error_payload)
                     await self._publish_bus({"type": "error", **error_payload})
+                    if self.observability:
+                        self.observability.record_run_failed(
+                            run_type="chat_stream",
+                            run_id=run_id,
+                            session=session,
+                            error=str(exc),
+                        )
+                finally:
+                    if self.observability and completed:
+                        self.observability.record_run_completed(
+                            run_type="chat_stream",
+                            run_id=run_id,
+                            session=session,
+                        )
 
     async def stream_run(self, request: Any) -> AsyncIterator[Dict[str, Any]]:
         run_id = uuid.uuid4().hex
@@ -371,12 +510,23 @@ class AgentOrchestrator:
         await self._enter_session(session)
         await self._log_memory(session, kind="goal", text=goal, tags=["goal", session], meta={"run_id": run_id})
 
+        if self.observability:
+            self.observability.record_run_started(
+                run_type="run_stream",
+                run_id=run_id,
+                session=session,
+                goal=goal,
+                model=model,
+            )
+
         ui_prefs = getattr(request, "ui_prefs", {}) or {}
         overrides = ui_prefs.get("prompt_overrides")
         persona_override = ui_prefs.get("persona")
 
         with self.prompt_manager.runtime_overrides(overrides):
             with self.prompt_manager.persona_context(persona_override):
+                run_failed = False
+                completed = False
                 try:
                     start_payload = {
                         "type": "run_started",
@@ -388,7 +538,7 @@ class AgentOrchestrator:
                     yield self._format_event("event", start_payload)
                     await self._publish_bus(start_payload)
 
-                    memory_items = await self._retrieve_memory(goal)
+                    memory_items = await self._retrieve_memory(goal, session=session)
                     if memory_items:
                         memory_payload = {
                             "type": "memory",
@@ -411,6 +561,14 @@ class AgentOrchestrator:
                                 {"message": "run cancelled", "where": "orchestrator", "run_id": run_id},
                             )
                             await self._publish_bus({"type": "run_cancelled", "run_id": run_id})
+                            if self.observability and not run_failed:
+                                self.observability.record_run_failed(
+                                    run_type="run_stream",
+                                    run_id=run_id,
+                                    session=session,
+                                    error="cancelled",
+                                )
+                            run_failed = True
                             break
                         task = planner.next_task()
                         if task is None:
@@ -424,6 +582,13 @@ class AgentOrchestrator:
                         }
                         yield self._format_event("event", task_start)
                         await self._publish_bus(task_start)
+                        if self.observability:
+                            self.observability.record_task_started(
+                                run_id=run_id,
+                                task_id=task.id,
+                                owner=session,
+                                description=task.description,
+                            )
 
                         analysis = await self._analyze_task(task.description, goal)
                         tool_start = {
@@ -454,7 +619,14 @@ class AgentOrchestrator:
                             finally:
                                 self._hil_waits.pop(context_id, None)
 
-                        result = await self._execute_task(session, task, analysis, [], depth=0)
+                        result = await self._execute_task(
+                            session,
+                            task,
+                            analysis,
+                            [],
+                            depth=0,
+                            run_id=run_id,
+                        )
 
                         tool_end = {
                             "type": "tool_end",
@@ -473,6 +645,13 @@ class AgentOrchestrator:
                         task.status = "completed"
                         task.result = result
                         completed.append(task)
+                        if self.observability:
+                            self.observability.record_task_completed(
+                                run_id=run_id,
+                                task_id=task.id,
+                                owner=session,
+                                result=self._clip_text(result),
+                            )
                         planner.consider_followups(task, result)
 
                     summary = self._summarize(goal, completed)
@@ -486,15 +665,31 @@ class AgentOrchestrator:
                         tags=["summary", session],
                         meta={"run_id": run_id, "goal": goal},
                     )
-                    yield self._format_event("done", {"ok": True, "run_id": run_id})
-                    self.prompt_manager.record_success(session, reset=True)
+                    yield self._format_event("done", {"ok": not run_failed, "run_id": run_id})
+                    if not run_failed:
+                        completed = True
+                        self.prompt_manager.record_success(session, reset=True)
                 except Exception as exc:
                     self.prompt_manager.record_failure(session)
                     error_payload = {"message": str(exc), "where": "orchestrator", "run_id": run_id}
                     yield self._format_event("error", error_payload)
                     await self._publish_bus({"type": "error", **error_payload})
+                    if self.observability:
+                        self.observability.record_run_failed(
+                            run_type="run_stream",
+                            run_id=run_id,
+                            session=session,
+                            error=str(exc),
+                        )
+                    run_failed = True
                 finally:
                     self._active_runs.pop(run_id, None)
+                    if self.observability and completed and not run_failed:
+                        self.observability.record_run_completed(
+                            run_type="run_stream",
+                            run_id=run_id,
+                            session=session,
+                        )
 
     # ------------------------------------------------------------------
     def _base_messages(self, content: str, session: str) -> List[Dict[str, str]]:
@@ -524,6 +719,7 @@ class AgentOrchestrator:
         memory_snippets: Iterable[str],
         *,
         depth: int,
+        run_id: Optional[str] = None,
     ) -> str:
         clean_call = ToolCall.model_validate(
             {
@@ -544,9 +740,15 @@ class AgentOrchestrator:
                 task=task,
                 analysis=clean_analysis,
                 orchestrator=self,
+                run_id=run_id,
             )
         else:
-            result = await self._invoke_tool(session, clean_analysis)
+            result = await self._invoke_tool(
+                session,
+                clean_analysis,
+                run_id=run_id,
+                task_id=task.id,
+            )
         await self._log_memory(
             session,
             kind="fact",
@@ -560,11 +762,24 @@ class AgentOrchestrator:
             self.prompt_manager.record_success(session)
         return result
 
-    async def _invoke_tool(self, session: str, analysis: AnalyzeOutput) -> str:
+    async def _invoke_tool(
+        self,
+        session: str,
+        analysis: AnalyzeOutput,
+        *,
+        run_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> str:
         tool = self.tool_registry.get(analysis.chosen_tool)
         if not tool:
             logger.warning("No tool registered named '%s'", analysis.chosen_tool)
             return "no tool"
+        if self.observability:
+            self.observability.record_tool_usage(
+                tool=analysis.chosen_tool,
+                run_id=run_id,
+                task_id=task_id,
+            )
         try:
             result = await tool.run(**analysis.args)
         except Exception as exc:  # pragma: no cover
@@ -580,6 +795,12 @@ class AgentOrchestrator:
         bullet_points = "\n".join(f"- ({task.id}) {task.description}: {task.result}" for task in completed)
         return f"SUMMARY: Completed {len(completed)} tasks.\n{bullet_points}"
 
+    def _clip_text(self, text: Any, limit: int = 400) -> str:
+        value = "" if text is None else str(text)
+        if len(value) <= limit:
+            return value
+        return value[: limit - 1] + "…"
+
     async def _enter_session(self, session_id: str) -> None:
         enter = getattr(self.memory, "enter", None)
         if enter:
@@ -588,11 +809,19 @@ class AgentOrchestrator:
             except Exception:  # pragma: no cover
                 logger.debug("Memory store enter failed", exc_info=True)
 
-    async def _retrieve_memory(self, query: str) -> List[Dict]:
+    async def _retrieve_memory(self, query: str, *, session: str) -> List[Dict]:
+        items: List[Dict] = []
         try:
-            return await self.memory.similar(query, k=self.memory_top_k)
+            items = await self.memory.similar(query, k=self.memory_top_k)
         except AttributeError:
-            return []
+            items = []
+        finally:
+            if self.observability:
+                if items:
+                    self.observability.record_memory_hit(session=session, count=len(items))
+                else:
+                    self.observability.record_memory_miss(session=session)
+        return items
 
     async def _embed_text(self, text: str) -> Optional[List[float]]:
         if not self.embeddings or not text:

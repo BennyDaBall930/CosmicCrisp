@@ -1,65 +1,35 @@
-![Agent Zero Logo](res/header.png)
-# Agent Zero Documentation
-To begin with Agent Zero, follow the links below for detailed guides on various topics:
+![Apple Zero Runtime](res/header.png)
+# Apple Zero Runtime
+Apple Zero is the macOS-native evolution of the Cosmic Crisp / Agent Zero stack. It fuses a FastAPI gateway, async orchestrator, declarative tool registry, and composite memory into a single runtime that runs directly on macOS—no Docker layer required.
 
-- **[Installation](installation.md):** Set up (or [update](installation.md#how-to-update-agent-zero)) Agent Zero on your system.
-- **[Usage Guide](usage.md):** Explore GUI features and usage scenarios.
-- **[Architecture Overview](architecture.md):** Understand the internal workings of the framework.
-- **[Contributing](contribution.md):** Learn how to contribute to the Agent Zero project.
-- **[Troubleshooting and FAQ](troubleshooting.md):** Find answers to common issues and questions.
+## Start Here
+- **[Installation](installation.md):** Bootstrap the native toolchain, Python environment, and UI runner on macOS.
+- **Runtime Overview (`README.md`):** Architectural deep dive, configuration tables, and testing workflows.
+- **`python/runtime` package:** FastAPI app, dependency container, orchestrator, memory adapters, and token service.
+- **`webui/`:** React client that consumes `/runtime` SSE timelines, manual browser takeover prompts, and configuration overrides.
 
-### Your experience with Agent Zero starts now!
+## Runtime Highlights
+- **Unified Gateway:** `python/runtime/api/app.py` exposes REST + SSE endpoints that power the CLI and web UI.
+- **Async Orchestrator:** `python/runtime/agent/orchestrator.py` manages planner loops, subagents, tool dispatch, and memory persistence.
+- **Composite Memory:** Local SQLite + FAISS embeddings (`python/runtime/memory`) with optional Mem0 hybrid retrieval.
+- **Model Routing:** `python/runtime/models/router.py` selects providers (OpenAI, Anthropic, Gemini, LM Studio, etc.) using capability- and budget-aware policies.
+- **Tooling Surface:** Browser, code, shell, search, and custom instruments registered via `python/runtime/tools` and surfaced in the UI timeline.
 
-- **Download Agent Zero:** Follow the [installation guide](installation.md) to download and run Agent Zero.
-- **Join the Community:** Join the Agent Zero [Skool](https://www.skool.com/agent-zero) or [Discord](https://discord.gg/B8KZKNsPpj) community to discuss ideas, ask questions, and collaborate with other contributors.
-- **Share your Work:** Share your Agent Zero creations, workflows and discoverings on our [Show and Tell](https://github.com/agent0ai/agent-zero/discussions/categories/show-and-tell) area on GitHub.
-- **Report Issues:** Use the [GitHub issue tracker](https://github.com/agent0ai/agent-zero/issues) to report framework-relative bugs or suggest new features.
+## Working Copies & Configuration
+- **Environment:** `.env` or shell exports configure embeddings, router models, observability, and planner behaviour. Override defaults through `runtime.toml` for repeatable setups.
+- **Memory Assets:** Runtime caches (`./tmp/`), memory database (`./data/runtime.sqlite`), and optional Mem0 credentials enable long-lived recall.
+- **Logging & Metrics:** JSON logs stream to `./logs/runtime_observability.jsonl`; Prometheus metrics live at `/runtime/admin/metrics`; Helicone headers are emitted when `HELICONE_ENABLED=true`.
 
-## Table of Contents
+## Operational Checklist
+1. Install prerequisites and create the virtual environment (see [Installation](installation.md)).
+2. Populate `.env` with model API keys and router overrides.
+3. Launch the runtime with `./dev/macos/run.sh` or `python -m python.runtime.api.app`.
+4. Open `http://localhost:8080` for the UI, or interact through the CLI entrypoints in `run/`.
+5. Rebuild embeddings or import legacy data using the helper CLIs in `python/runtime/tools` when migrating memory.
 
-- [Welcome to the Agent Zero Documentation](#agent-zero-documentation)
-  - [Your Experience with Agent Zero](#your-experience-with-agent-zero-starts-now)
-  - [Table of Contents](#table-of-contents)
-- [Installation Guide](installation.md)
-  - [Windows, macOS and Linux Setup](installation.md#windows-macos-and-linux-setup-guide)
-  - [Settings Configuration](installation.md#settings-configuration)
-  - [Choosing Your LLMs](installation.md#choosing-your-llms)
-  - [Installing and Using Ollama](installation.md#installing-and-using-ollama-local-models)
-  - [Using Agent Zero on Mobile](installation.md#using-agent-zero-on-your-mobile-device)
-  - [How to Update Agent Zero](installation.md#how-to-update-agent-zero)
-  - [Full Binaries Installation](installation.md#in-depth-guide-for-full-binaries-installation)
-- [Usage Guide](usage.md)
-  - [Basic Operations](usage.md#basic-operations)
-    - [Restart Framework](usage.md#restart-framework)
-    - [Action Buttons](usage.md#action-buttons)
-    - [File Attachments](usage.md#file-attachments)
-  - [Tool Usage](usage.md#tool-usage)
-  - [Example of Tools Usage](usage.md#example-of-tools-usage-web-search-and-code-execution)
-  - [Multi-Agent Cooperation](usage.md#multi-agent-cooperation)
-  - [Prompt Engineering](usage.md#prompt-engineering)
-  - [Voice Interface](usage.md#voice-interface)
-  - [Mathematical Expressions](usage.md#mathematical-expressions)
-  - [File Browser](usage.md#file-browser)
-  - [Backup & Restore](usage.md#backup--restore)
-- [Architecture Overview](architecture.md)
-  - [System Architecture](architecture.md#system-architecture)
-  - [Runtime Architecture](architecture.md#runtime-architecture)
-  - [Implementation Details](architecture.md#implementation-details)
-  - [Core Components](architecture.md#core-components)
-    - [Agents](architecture.md#1-agents)
-    - [Tools](architecture.md#2-tools)
-    - [SearXNG Integration](architecture.md#searxng-integration)
-    - [Memory System](architecture.md#3-memory-system)
-    - [Messages History and Summarization](archicture.md#messages-history-and-summarization)
-    - [Prompts](architecture.md#4-prompts)
-    - [Knowledge](architecture.md#5-knowledge)
-    - [Instruments](architecture.md#6-instruments)
-    - [Extensions](architecture.md#7-extensions)
-  - [Contributing](contribution.md)
-  - [Getting Started](contribution.md#getting-started)
-  - [Making Changes](contribution.md#making-changes)
-  - [Submitting a Pull Request](contribution.md#submitting-a-pull-request)
-  - [Documentation Stack](contribution.md#documentation-stack)
-- [Troubleshooting and FAQ](troubleshooting.md)
-  - [Frequently Asked Questions](troubleshooting.md#frequently-asked-questions)
-  - [Troubleshooting](troubleshooting.md#troubleshooting)
+## Testing & Maintenance
+- Run focused runtime tests with `python -m pytest tests/runtime -q` (ensure `PYTHONPATH=$(pwd)`).
+- Use `python -m python.runtime.tools.reindex_memory` to keep embeddings fresh after large imports.
+- Track regressions and telemetry via the observability stack before promoting configuration changes.
+
+Apple Zero keeps the rapid iteration workflow of Agent Zero while embracing first-class macOS support. Keep these docs close when retuning models, extending tools, or migrating historical knowledge into the native runtime.

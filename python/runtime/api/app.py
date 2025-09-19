@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Dict
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from .schemas import (
     BrowserContinueRequest,
@@ -20,7 +20,7 @@ from .schemas import (
 )
 from .sse import sse_iter
 from ..config import load_runtime_config
-from ..container import event_bus, get_orchestrator, memory, tool_registry
+from ..container import event_bus, get_orchestrator, memory, observability, tool_registry
 
 TAGS_METADATA = [
     {"name": "Chat", "description": "Interactive chat endpoints with token streaming."},
@@ -161,6 +161,8 @@ async def tools_invoke_endpoint(payload: ToolInvokeRequest) -> Dict[str, Any]:
     tool = registry.get(payload.name)
     if tool is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tool not found")
+    obs = observability()
+    obs.record_tool_usage(tool=payload.name)
     result = await tool.run(**payload.inputs)
     return {"result": result}
 
@@ -207,6 +209,12 @@ async def admin_health_endpoint() -> Dict[str, Any]:
             "tools_auto_modules": list(_config.tools.auto_modules),
         }
     }
+
+
+@router.get("/admin/metrics", tags=["Admin"], dependencies=[Depends(require_admin_auth)])
+async def admin_metrics_endpoint() -> Response:
+    metrics_blob = observability().export_metrics()
+    return Response(content=metrics_blob, media_type="text/plain; version=0.0.4")
 
 
 @router.get("/admin/runs/{run_id}/artifacts", tags=["Admin"], dependencies=[Depends(require_admin_auth)])

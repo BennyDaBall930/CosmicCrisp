@@ -1,9 +1,11 @@
-from cosmiccrisp.agent import prompts
-from .golden_prompts import GOLDEN_PROMPTS
+from python.runtime.agent import prompts
 
 
-def test_prompts_snapshot():
-    assert prompts.start_goal_prompt == GOLDEN_PROMPTS["start_goal_prompt"]
-    assert prompts.analyze_task_prompt == GOLDEN_PROMPTS["analyze_task_prompt"]
-    assert prompts.create_tasks_prompt == GOLDEN_PROMPTS["create_tasks_prompt"]
-    assert prompts.summarize_prompt == GOLDEN_PROMPTS["summarize_prompt"]
+def test_prompts_library_exports_guardrails():
+    assert isinstance(prompts.SAFETY_GUARDRAILS, str)
+    assert 'legal' in prompts.SAFETY_GUARDRAILS.lower()
+
+
+def test_persona_modifiers_have_strings():
+    assert prompts.PERSONA_MODIFIERS
+    assert all(isinstance(value, str) for value in prompts.PERSONA_MODIFIERS.values())

@@ -1,325 +1,291 @@
-# Apple Zero - macOS Native Port
+# Apple Zero Runtime
 
-A comprehensive AI agent framework running natively on macOS without Docker dependency. This port provides full terminal integration, native PTY management, and seamless macOS compatibility.
+Apple Zero is the macOS-native evolution of the Cosmic Crisp / Agent Zero stack. It combines a unified FastAPI gateway, an async orchestrator with subagents, model-aware memory, and a declarative tool platform that runs entirely on the host (no Docker required).
 
-## 🎯 Features
+## Table of Contents
 
-- **Native macOS Execution**: Runs directly on macOS without Docker containerization
-- **Real Terminal Integration**: Uses native PTY for authentic terminal experience
-- **Permission Management**: Smart prompts for sudo and dangerous operations
-- **Session Management**: Multiple concurrent terminal sessions with cleanup
-- **Web UI**: Modern browser-based interface with terminal settings
-- **Voice Support**: Isabella voice integration via Kokoro TTS
-- **MCP/A2A Support**: Full compatibility with existing MCP servers and A2A protocol
-- **File Operations**: Native file browsing, editing, and management
+1. [Architecture Overview](#architecture-overview)
+2. [Quick Start](#quick-start)
+3. [Configuration Essentials](#configuration-essentials)
+4. [Memory & Context Management](#memory--context-management)
+5. [Token Budgets & Context Fitting](#token-budgets--context-fitting)
+6. [Subagents & Autonomy](#subagents--autonomy)
+7. [UI & Human-in-the-Loop Browsing](#ui--human-in-the-loop-browsing)
+8. [Observability & Logging](#observability--logging)
+9. [Migration & Compatibility Notes](#migration--compatibility-notes)
+10. [Testing](#testing)
+11. [macOS Platform Notes](#macos-platform-notes)
 
-## 🚀 Quick Start
+---
+
+## Architecture Overview
+
+```mermaid
+graph TD
+    UI[Web UI / CLI] -->|REST & SSE| API[FastAPI Gateway (python/runtime/api/app.py)]
+    API --> Container[Runtime Container (python/runtime/container.py)]
+    Container --> Orchestrator[Agent Orchestrator]
+    Container --> Tokens[Token Service]
+    Container --> Memory[Composite Memory Store]
+    Container --> ModelRouter[Model Router]
+    Container --> Tools[Tool Registry]
+    Container --> Prompts[Prompt Manager]
+    Orchestrator --> Subagents[Subagent Manager]
+    Orchestrator --> EventBus[Event Bus]
+    Orchestrator --> Observability[Observability]
+    ModelRouter -->|LiteLLM / LM Studio| Providers[Model Providers]
+    Memory --> Embeddings[Embeddings Service]
+    Tools --> Browser[Browser / Search / Code / Shell]
+```
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant UI as Web UI / CLI
+    participant API as /runtime FastAPI
+    participant Orchestrator
+    participant Memory
+    participant Router as Model Router
+    participant Tools
+
+    User->>UI: submit goal / chat
+    UI->>API: POST /runtime/run (SSE)
+    API->>Orchestrator: stream_run(payload)
+    Orchestrator->>Memory: similar(goal, k)
+    Orchestrator->>Tokens: fit(messages, model, snippets)
+    Orchestrator->>Router: select(task_type, capabilities)
+    Orchestrator->>Tools: invoke(tool, args)
+    Orchestrator->>Memory: add(summary/fact)
+    Orchestrator-->>API: SSE events + tokens
+    API-->>UI: timeline, manual-browser prompts, summaries
+    UI-->>User: live planner/summary view
+```
+
+## Quick Start
 
 ### Prerequisites
 
-- macOS 10.15 or later
-- Python 3.8 or later
-- Homebrew (will be installed automatically if not present)
+- macOS 12+
+- Python 3.10+
+- Homebrew (installer in `dev/macos/setup.sh` will bootstrap if missing)
 
-### Installation
-
-1. **Run the setup script:**
-   ```bash
-   cd APPLE_ZERO_MACOS
-   ./dev/macos/setup.sh
-   ```
-
-2. **Start the agent:**
-   ```bash
-   ./dev/macos/run.sh
-   ```
-
-3. **Open your browser:**
-   ```
-   http://localhost:8080
-   ```
-
-That's it! The setup script will:
-- Install Homebrew if needed
-- Install required system dependencies (ffmpeg, portaudio, etc.)
-- Create a Python virtual environment
-- Install all Python dependencies
-- Set up the development environment
-
-## 🛠️ Manual Installation
-
-If you prefer manual setup or encounter issues:
-
-### System Dependencies
+### Bootstrap
 
 ```bash
-# Install Homebrew (if not already installed)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install system dependencies
-brew install ffmpeg portaudio poppler tesseract libsndfile coreutils gnu-sed jq wget git
-
-# Install Python dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Install Playwright browsers into project cache
-PLAYWRIGHT_BROWSERS_PATH=./tmp/playwright playwright install chromium
-```
-
-### Environment Setup
-
-Create a `.env` file with your API keys:
-
-```env
-# OpenAI API Key (required)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Optional: Other LLM providers
-ANTHROPIC_API_KEY=your_anthropic_key
-GOOGLE_API_KEY=your_google_key
-
-# Optional: Search providers
-PERPLEXITY_API_KEY=your_perplexity_key
-
-# Optional: Browser automation
-PLAYWRIGHT_BROWSERS_PATH=./browsers
-```
-
-## 🏗️ Architecture
-
-### Core Components
-
-- **PTY Adapter** (`python/adapters/terminal/macos_pty.py`): Native macOS terminal interface using pexpect/ptyprocess
-- **Terminal Manager** (`python/services/terminal_manager.py`): Session lifecycle management and permission gating
-- **API Layer** (`python/api/terminal_*.py`): REST endpoints for terminal operations
-- **UI Components** (`webui/components/settings/terminal/`): Browser-based terminal settings interface
-
-### Key Changes from Docker Version
-
-1. **Native PTY Integration**: Replaced SSH/Docker with direct PTY spawning
-2. **Permission System**: Added sudo/delete command confirmation dialogs
-3. **Session Management**: Multi-session support with automatic cleanup
-4. **Signal Handling**: Proper zombie process prevention
-5. **macOS Optimization**: Native file paths, environment variables, and shell integration
-
-## 🔧 Configuration
-
-### Terminal Settings
-
-Access terminal settings through the web UI:
-- **Shell Path**: Choose between `/bin/bash`, `/bin/zsh`, or custom shell
-- **Terminal Size**: Adjust rows and columns
-- **Environment Variables**: Set custom environment for sessions
-- **Permissions**: Configure timeout for sudo prompts
-- **Idle Timeout**: Automatic session cleanup after inactivity
-
-### API Endpoints
-
-The system exposes REST API endpoints for terminal operations:
-
-- `POST /api/terminal/start` - Create new terminal session
-- `POST /api/terminal/write` - Write to terminal (with permission checking)
-- `POST /api/terminal/confirm` - Confirm permission requests
-- `GET /api/terminal/stream/{session_id}` - Stream terminal output (SSE)
-- `GET /api/terminal/sessions` - List active sessions
-- `POST /api/terminal/resize` - Resize terminal window
-- `GET /api/terminal/settings` - Get terminal configuration
-- `POST /api/terminal/settings` - Update terminal configuration
-
-## 🧪 Testing
-
-Run the test suite to verify functionality:
-
-```bash
-# Run all tests
-python3 tests/test_terminal_adapter.py
-python3 tests/test_terminal_api.py
-
-# Or with pytest (if available)
-pytest tests/ -v
-```
-
-Tests cover:
-- PTY adapter functionality (spawn, read, write, resize)
-- Permission system (sudo detection, confirmation flow)
-- Session management (create, cleanup, concurrent sessions)
-- API integration (REST endpoints, error handling)
-
-## 🔒 Security
-
-### Permission System
-
-The system includes built-in security for dangerous operations:
-
-- **Sudo Commands**: Require explicit user confirmation
-- **File Deletion**: `rm -rf`, `rm -f` commands require approval
-- **System Paths**: Operations in `/etc/`, `/usr/`, `/System/` require approval
-- **Wildcard Operations**: Commands with `*` patterns require approval
-
-### Session Management
-
-- Sessions automatically timeout after inactivity
-- Maximum concurrent session limits
-- Proper process cleanup prevents resource leaks
-- Signal handling prevents zombie processes
-
-## 🎵 Voice Integration
-
-The system uses Kokoro TTS with Isabella voice:
-
-```python
-# Voice configuration in python/helpers/kokoro_tts.py
-_voice = "bf_isabella"  # Female Isabella voice
-_speed = 1.1           # Slightly faster than default
-```
-
-To disable voice features, set `ENABLE_TTS=false` in your `.env` file.
-
-## 🔌 MCP Server Integration
-
-Full compatibility with Model Context Protocol servers:
-
-```bash
-# Example: Add a new MCP server
-# The system will automatically detect and integrate MCP servers
-# configured in your MCP configuration files
-```
-
-## 📊 Monitoring and Debugging
-
-### Logs
-
-Logs are written to the `logs/` directory:
-- `terminal_manager.log` - Session management events
-- `pty_adapter.log` - PTY operation logs
-- `api.log` - API request/response logs
-
-### Debug Mode
-
-Enable debug logging by setting:
-
-```env
-LOG_LEVEL=DEBUG
-PYTHONPATH=/path/to/project:$PYTHONPATH
-```
-
-## ⚡ Performance
-
-### Optimizations
-
-- **Efficient PTY Management**: Threaded readers for non-blocking I/O
-- **Buffer Management**: Circular buffers prevent memory bloat
-- **Session Cleanup**: Automatic garbage collection of idle sessions
-- **Signal Handling**: Proper process lifecycle management
-
-### Resource Usage
-
-- **Memory**: ~50-100MB base usage + ~5-10MB per active session
-- **CPU**: Minimal when idle, scales with terminal activity
-- **Disk**: Logs rotate automatically, temp files cleaned on exit
-
-## 🚨 Troubleshooting
-
-### Common Issues
-
-**PTY spawn fails:**
-```bash
-# Check shell exists
-which /bin/bash
-# Check permissions
-ls -la /bin/bash
-```
-
-**Permission errors:**
-```bash
-# Ensure proper file permissions
-chmod +x dev/macos/setup.sh
-chmod +x dev/macos/run.sh
-```
-
-**Import errors:**
-```bash
-# Activate virtual environment
-source venv/bin/activate
-# Reinstall dependencies
-pip install -r requirements.txt
-```
-
-**Port already in use:**
-```bash
-# Kill existing processes
-lsof -ti:8080 | xargs kill -9
-```
-
-### Getting Help
-
-1. Check the logs in `logs/` directory
-2. Run tests to verify functionality
-3. Ensure all dependencies are installed
-4. Check macOS compatibility (10.15+)
-
-## 🤝 Contributing
-
-This is a complete port of Apple Zero for native macOS execution. The architecture maintains compatibility with the original while adding macOS-specific optimizations.
-
-### Development
-
-```bash
-# Setup development environment
+# 1. Install native dependencies, virtualenv, Playwright cache
 ./dev/macos/setup.sh
 
-# Run in development mode
-export FLASK_ENV=development
+# 2. Launch the combined FastAPI + UI runtime
 ./dev/macos/run.sh
+
+# 3. Open the web client
+open http://localhost:8080
 ```
 
-## 📄 License
+To run the FastAPI app directly without the helper script:
 
-Same license as the original Apple Zero project.
-
-## 🐞 Recent Bug Fixes (September 2025)
-
-- **Corrected Development Mode Detection:** Resolved an issue where the application would incorrectly enter a development mode on standalone macOS, causing multiple tool failures. The `is_development()` check is now more specific, ensuring stability in native environments.
-- **Fixed Search Engine:** Replaced a non-functional search provider with DuckDuckGo to ensure reliable web search capabilities.
-- **Stabilized Code Execution:** Corrected the Python interpreter path to use the standard `python` command, resolving `ipython: command not found` errors and ensuring consistent code execution.
-- **Unified Application Port:** Standardized the application to run on port `8080` for both the backend and frontend, fixing the "backend is disconnected" error and simplifying the user experience.
-
-## 🎉 Acknowledgments
-
-- Original Apple Zero team for the foundation
-- pexpect/ptyprocess developers for PTY management
-- Kokoro TTS team for voice synthesis
-- macOS terminal emulation standards
-
-## CosmicCrisp Backend
-
-A lightweight FastAPI service implementing streaming agent endpoints.
-
-### Running
-
-```
-uv run python -m python.runtime.api.app
-# or
+```bash
+source venv/bin/activate
 python -m python.runtime.api.app
 ```
 
-When the main UI (`run_ui.py`) is launched the same FastAPI application is
-mounted under the `/runtime` prefix, exposing `/runtime/run` and
-`/runtime/chat` alongside the existing Flask endpoints.
+## Configuration Essentials
 
-### Examples
+Runtime configuration merges environment variables with an optional `runtime.toml`. The loader lives in `python/runtime/config.py` and exposes the following top-level sections: `embeddings`, `memory`, `tokens`, `prompts`, `observability`, `agent`, `tools`, and `router`.
 
+| Key | Purpose | Example Overrides |
+| --- | --- | --- |
+| `EMBEDDINGS_PROVIDER`, `EMBEDDINGS_MODEL` | Configure embedding service (OpenAI, local LM Studio via LiteLLM) | `EMBEDDINGS_PROVIDER=openai`, `EMBEDDINGS_MODEL=text-embedding-3-large` |
+| `MEM0_ENABLED`, `MEM0_API_KEY`, `MEM0_BASE_URL` | Enable hybrid Mem0 retrieval alongside SQLite | `MEM0_ENABLED=true` |
+| `SUMMARIZER_MODEL`, `TOKEN_BUDGET_*` | Override default token budgets and summarizer model | `TOKEN_BUDGET_GPT_4O=196000` |
+| `ROUTER_DEFAULT_MODEL`, `ROUTER_MODELS` | Declare routing policies and capabilities | `ROUTER_MODELS='[{"name":"gpt-4o-mini","priority":1}]'` |
+| `HELICONE_ENABLED`, `HELICONE_BASE_URL`, `HELICONE_API_KEY` | Toggle Helicone proxy & observability headers | `HELICONE_ENABLED=true` |
+
+### Sample `runtime.toml`
+
+```toml
+[embeddings]
+provider = "openai"
+model = "text-embedding-3-large"
+
+[memory]
+db_path = "./data/runtime.sqlite"
+mem0_enabled = false
+
+[tokens]
+summarizer_model = "gpt-4.1-mini"
+
+[router]
+default_model = "gpt-4o"
+default_strategy = "balanced"
+[[router.models]]
+name = "gpt-4o"
+priority = 1
+max_context = 128000
+capabilities = ["general", "code"]
+
+[[router.models]]
+name = "lm-studio:gpt4all"
+provider = "openai"
+priority = 2
+max_context = 32000
+is_local = true
+metadata.api_base = "http://localhost:1234/v1"
 ```
-curl -N -X POST localhost:8000/run -H "Content-Type: application/json" -d '{"goal":"Find the latest docs"}'
 
-curl -N -X POST localhost:8000/chat -H "Content-Type: application/json" -d '{"session_id":"s1","message":"hello"}'
+## Memory & Context Management
+
+Apple Zero uses a composite memory stack (`python/runtime/memory`) combining a local SQLite+FAISS store with optional Mem0 hybrid retrieval.
+
+| Provider | Model / Endpoint | Config Keys | Notes |
+| --- | --- | --- | --- |
+| OpenAI | `text-embedding-3-large` (default) | `EMBEDDINGS_PROVIDER=openai`, `EMBEDDINGS_MODEL=text-embedding-3-large` | High-quality embeddings, cached in `./tmp/embeddings.sqlite`. |
+| LiteLLM → LM Studio | Example `text-embedding-3-small` served by LM Studio | `EMBEDDINGS_PROVIDER=local_mlx`, `EMBEDDINGS_MODEL=lm-studio`, set `OPENAI_BASE_URL` to LM Studio server | Uses LiteLLM-compatible REST API. |
+| Null | Deterministic stub for tests | `EMBEDDINGS_PROVIDER=null` | Returns fixed vectors for offline testing. |
+
+### Mem0 Hybrid Retrieval
+
+Set the following to enable Mem0 alongside the local store:
+
+```env
+MEM0_ENABLED=true
+MEM0_API_KEY=your_mem0_token
+MEM0_BASE_URL=https://your-mem0-host
 ```
 
-### Runtime HTTP API
-- Streaming endpoints now live under `/runtime/chat` and `/runtime/run` (SSE).
-- `/runtime/events` streams system and human-in-the-loop events for the Web UI sidebar.
-- Admin utilities: `/runtime/admin/memory`, `/runtime/admin/health`, and run cancel/resume endpoints.
-- Tool metadata is available via `/runtime/tools`; simple tools can be invoked through `/runtime/tools/invoke`.
-- Browser interventions publish `browser_hil_required` events; resume with `POST /runtime/browser/continue`.
+When enabled, the adapter merges remote results with the local SQLite store and defers reindex operations to the fallback store when possible.
+
+### CLI Tools
+
+Two helper CLIs ship with the runtime:
+
+```bash
+# Rebuild vectors for all (or a specific) sessions
+python -m python.runtime.tools.reindex_memory --verbose
+python -m python.runtime.tools.reindex_memory --session research-2024
+
+# Import legacy JSON/NDJSON exports into the new store
+python -m python.runtime.tools.migrate_memory ./memory-exports --session backlog --kind fact
+```
+
+Both utilities respect your environment configuration and will load embeddings/memory using the same runtime container settings.
+
+## Token Budgets & Context Fitting
+
+`python/runtime/tokenizer/token_service.py` manages window fitting. Default budgets ship with the runtime and can be overridden via `runtime.toml` or environment variables.
+
+| Model (normalized) | Default Window |
+| --- | --- |
+| `gpt-4o` | 128,000 |
+| `gpt-4.1-mini` | 64,000 |
+| `claude-3-5` | 200,000 |
+| `gemini-2.5-pro` | 1,000,000 |
+| `local-mlx` | 8,192 |
+
+Override options:
+
+- Inline JSON: `TOKEN_BUDGETS='{"gpt-4o":196000, "claude-3-5":180000}'`
+- Per-model env: `TOKEN_BUDGET_GPT_4O=196000`
+- Default summarizer: `SUMMARIZER_MODEL=claude-3-5`
+
+The service preserves the system prompt, injects summarised memory snippets, and trims conversation history. Summaries are emitted as synthetic `system` messages annotated with "Conversation summary".
+
+## Subagents & Autonomy
+
+The orchestrator (`python/runtime/agent/orchestrator.py`):
+
+- Runs a goal → analyze → execute → summarize loop.
+- Seeds a `TaskPlanner` priority queue and persists task outcomes to memory.
+- Spawns subagents for tool classes such as `browser` and `code`, respecting `AGENT_SUBAGENT_MAX_DEPTH` and `AGENT_SUBAGENT_TIMEOUT` from `AgentConfig`.
+- Streams events via the `EventBus` for the UI timeline (`task_started`, `tool_start`, `browser_hil_required`, etc.).
+
+Tune behaviour via environment variables:
+
+```env
+AGENT_MAX_LOOPS=25
+AGENT_SUBAGENT_MAX_DEPTH=2
+AGENT_SUBAGENT_TIMEOUT=90
+AGENT_PERSONA=concise
+```
+
+## UI & Human-in-the-Loop Browsing
+
+The React web UI consumes `/runtime` SSE streams to render:
+
+- Planner timeline (tasks, analysis, tool invocations)
+- Memory recalls and summaries per run
+- Token stream output with model attribution
+- Manual browser takeover prompts (`/runtime/browser/continue`) when the `browser` tool encounters a CAPTCHA or block after two failed attempts
+- Configuration widgets for persona, autonomy level, and model selection (ties into router overrides)
+
+Manual intervention flow:
+1. UI receives `browser_hil_required` event.
+2. Operator completes the task manually (e.g., solves CAPTCHA).
+3. Submit context back via `/runtime/browser/continue` to resume execution.
+
+## Observability & Logging
+
+`python/runtime/observability.py` unifies metrics, JSON logging, and Helicone proxy headers.
+
+- JSON logs: `./logs/runtime_observability.jsonl`
+- Prometheus endpoint: `GET /runtime/admin/metrics` (enable admin auth if required)
+- Helicone: set `HELICONE_ENABLED=true`, `HELICONE_BASE_URL=https://helicone.yourhost`, `HELICONE_API_KEY=...`
+
+Each model call is tagged with session/run/token metadata, and counters expose run/task/tool/memory/token statistics. When Helicone is enabled the router hands back the appropriate `Helicone-*` headers for downstream logging.
+
+## Migration & Compatibility Notes
+
+### Importing Legacy Memory
+
+```bash
+# Convert legacy exports (memory/*.json, memory/*.ndjson)
+python -m python.runtime.tools.migrate_memory ./memory --session archive-2023 --kind fact
+
+# Rebuild vectors after import
+python -m python.runtime.tools.reindex_memory --verbose
+```
+
+### Configuring Models
+
+- **OpenAI / Azure / Anthropic:** supply API keys via `.env` (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) and add entries under `router.models` for routing policies (cost, latency, capabilities).
+- **Google Gemini:** configure LiteLLM provider keys (`GEMINI_API_KEY`) and register the Gemini model in `router.models` with `provider="google"`.
+- **Local LM Studio / Ollama:** expose the server as an OpenAI-compatible endpoint (e.g., http://localhost:1234/v1) and set `metadata.api_base` for that router entry. Mark `is_local=true` to allow the router to prefer remote models unless `allow_local=True` is specified.
+
+### Environment Variables Cheat Sheet
+
+| Purpose | Variable(s) |
+| --- | --- |
+| Memory location | `MEMORY_DB_PATH=./data/runtime.sqlite` |
+| Mem0 hybrid | `MEM0_ENABLED=true`, `MEM0_API_KEY=...`, `MEM0_BASE_URL=...` |
+| Router overrides | `ROUTER_MODELS`, `ROUTER_DEFAULT_MODEL`, `ROUTER_DEFAULT_STRATEGY` |
+| Token budgets | `TOKEN_BUDGETS`, `TOKEN_BUDGET_<MODEL>`, `SUMMARIZER_MODEL` |
+| UI flags | `AGENT_PERSONA`, `AGENT_MAX_LOOPS`, `AGENT_PLANNER_PROFILE` |
+| Observability | `HELICONE_*`, `OBSERVABILITY_LOG_PATH`, `OBSERVABILITY_METRICS_NS` |
+
+## Testing
+
+A focused runtime test suite lives under `tests/runtime/`:
+
+- `test_embeddings_cache.py` – cache hit/miss and batching behaviour
+- `test_memory_recall.py` – FAISS similarity and Mem0 fallback
+- `test_token_fit.py` – budget trimming and summarisation
+- `test_loop_integration.py` – orchestration loop integration
+- `test_tool_browser.py` – browser-use retries and human-in-loop escalation
+- `test_prompt_manager.py` – overrides, personas, adaptive hints
+- `test_model_router.py` – routing policies, telemetry headers
+
+Run all runtime tests with:
+
+```bash
+PATH="$(realpath ../.pytest-venv/bin):$HOME/bin:$PATH" \
+PYTHONPATH="$(pwd)" \
+python -m pytest tests/runtime -q
+```
+
+## macOS Platform Notes
+
+- Native PTY support (no Docker) lives under `python/adapters/terminal/macos_pty.py` and the terminal manager still powers the web terminal.
+- Voice features use Kokoro/Isabella (`python/helpers/kokoro_tts.py`); disable via `ENABLE_TTS=false` in `.env`.
+- Playwright browsers are installed into `./tmp/playwright` by the setup script; override with `PLAYWRIGHT_BROWSERS_PATH` if you need a shared cache.
+
+For deeper customization, inspect `python/runtime/container.py` to see how singletons are bootstrapped and cached across the runtime.

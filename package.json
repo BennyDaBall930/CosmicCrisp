@@ -1,0 +1,38 @@
+{
+  "name": "cosmiccrisp",
+  "version": "1.0.0",
+  "description": "Apple Zero is the macOS-native evolution of the Cosmic Crisp / Agent Zero stack. It combines a unified FastAPI gateway, an async orchestrator with subagents, model-aware memory, and a declarative tool platform that runs entirely on the host (no Docker required).",
+  "scripts": {
+    "test": "jest --config jest.config.ts",
+    "test:ci": "jest --runInBand --ci --config jest.config.ts",
+    "lint": "eslint .",
+    "qa:all": "npm run test:ci && (uv run pytest -q || pytest -q)",
+    "qa:prompts": "ts-node --project tsconfig.json tests/prompts/harness/run.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BennyDaBall930/CosmicCrisp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/BennyDaBall930/CosmicCrisp/issues"
+  },
+  "homepage": "https://github.com/BennyDaBall930/CosmicCrisp#readme",
+  "devDependencies": {
+    "@babel/core": "^7.28.4",
+    "@babel/preset-env": "^7.28.3",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.5.2",
+    "babel-jest": "^30.1.2",
+    "fast-check": "^4.3.0",
+    "jest": "^30.1.3",
+    "jest-junit": "^16.0.0",
+    "ts-jest": "^29.4.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2",
+    "zx": "^8.8.1"
+  }
+}

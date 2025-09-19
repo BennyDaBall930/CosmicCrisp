@@ -4,7 +4,10 @@ def try_parse(json_string: str):
     try:
         return json.loads(json_string)
     except json.JSONDecodeError:
-        return DirtyJson.parse_string(json_string)
+        try:
+            return DirtyJson.parse_string(json_string)
+        except Exception:
+            return None
 
 
 def parse(json_string: str):

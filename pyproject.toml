@@ -1,0 +1,36 @@
+[tool.coverage.run]
+branch = true
+source = ["python", "agents", "memory", "cosmiccrisp"]
+omit = [
+  "tests/*",
+  "venv/*",
+  "**/__init__.py",
+  "**/__main__.py",
+]
+parallel = true
+
+[tool.coverage.report]
+fail_under = 0
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "if __name__ == \"__main__\"",
+  "if TYPE_CHECKING:",
+  "pragma: no cover",
+]
+precision = 2
+
+[tool.coverage.xml]
+output = "reports/coverage/py-coverage.xml"
+
+[tool.ruff]
+line-length = 110
+select = ["E", "F", "B", "I"]
+ignore = ["E203", "E266", "E501"]
+
+[tool.ruff.format]
+quote-style = "preserve"
+
+[tool.pyright]
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false

@@ -1,12 +1,11 @@
-import os
 import pytest
 
-from cosmiccrisp.tools.search import SearchTool
+from python.runtime.tools.search import SearchTool
 
 
 @pytest.mark.asyncio
-async def test_search_offline():
-    os.environ.pop("SEARXNG_URL", None)
+async def test_search_offline(monkeypatch):
+    monkeypatch.setattr('python.runtime.tools.search.aiohttp', None, raising=False)
     tool = SearchTool()
-    result = await tool.run("test query")
-    assert "unavailable" in result
+    result = await tool.run('test query')
+    assert result == 'search: aiohttp not available'

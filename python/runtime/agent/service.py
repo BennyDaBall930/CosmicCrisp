@@ -1,7 +1,7 @@
 """High-level agent service delegating to the orchestrator."""
 from __future__ import annotations
 
-from typing import AsyncGenerator, Optional
+from typing import TYPE_CHECKING, AsyncGenerator, Optional
 
 from ..config import RuntimeConfig, load_runtime_config
 from ..embeddings import Embeddings
@@ -11,6 +11,9 @@ from ..tokenizer.token_service import TokenService
 from ..tools.registry import ToolRegistry, registry as default_registry
 from .orchestrator import AgentOrchestrator
 from .prompt_manager import PromptManager
+
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    from ..observability import Observability
 
 
 class AgentService:
@@ -26,6 +29,7 @@ class AgentService:
         prompt_manager: Optional[PromptManager] = None,
         embeddings: Optional[Embeddings] = None,
         model_router: Optional[object] = None,
+        observability: Optional["Observability"] = None,
     ) -> None:
         self.config = config or load_runtime_config()
         self.memory = memory or NullMemory()
@@ -34,6 +38,7 @@ class AgentService:
         self.prompt_manager = prompt_manager or PromptManager(persona=self.config.agent.persona)
         self.embeddings = embeddings
         self.model_router = model_router
+        self.observability = observability
         self.orchestrator = orchestrator or AgentOrchestrator(
             memory=self.memory,
             token_service=self.token_service,
@@ -42,6 +47,7 @@ class AgentService:
             prompt_manager=self.prompt_manager,
             embeddings=self.embeddings,
             model_router=self.model_router,
+            observability=self.observability,
         )
 
     async def run(self, goal: str) -> AsyncGenerator[str, None]:
