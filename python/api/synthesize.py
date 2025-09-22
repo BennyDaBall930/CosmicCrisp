@@ -2,36 +2,33 @@
 
 from python.helpers.api import ApiHandler, Request, Response
 
-from python.helpers import runtime, settings, kokoro_tts
+from python.helpers import settings
+from python.helpers.chatterbox_tts import (
+    ChatterboxConfig,
+    config_from_dict,
+    synthesize_base64,
+)
+
+def _chatterbox_settings() -> ChatterboxConfig:
+    all_settings = settings.get_settings()
+    tts_settings = all_settings.get("tts")
+    if not isinstance(tts_settings, dict):
+        tts_settings = settings.get_default_settings()["tts"]
+    chatterbox = tts_settings.get("chatterbox")
+    if not isinstance(chatterbox, dict):
+        chatterbox = settings.get_default_settings()["tts"]["chatterbox"]
+    return config_from_dict(chatterbox)
+
 
 class Synthesize(ApiHandler):
     async def process(self, input: dict, request: Request) -> dict | Response:
         text = input.get("text", "")
-        # ctxid = input.get("ctxid", "")
-        
-        # context = self.get_context(ctxid)
-        # if not await kokoro_tts.is_downloaded():
-        #     context.log.log(type="info", content="Kokoro TTS model is currently being initialized, please wait...")
-
         try:
-            # # Clean and chunk text for long responses
-            # cleaned_text = self._clean_text(text)
-            # chunks = self._chunk_text(cleaned_text)
-            
-            # if len(chunks) == 1:
-            #     # Single chunk - return as before
-            #     audio = await kokoro_tts.synthesize_sentences(chunks)
-            #     return {"audio": audio, "success": True}
-            # else:
-            #     # Multiple chunks - return as sequence
-            #     audio_parts = []
-            #     for chunk in chunks:
-            #         chunk_audio = await kokoro_tts.synthesize_sentences([chunk])
-            #         audio_parts.append(chunk_audio)
-            #     return {"audio_parts": audio_parts, "success": True}
-
-            # audio is chunked on the frontend for better flow
-            audio = await kokoro_tts.synthesize_sentences([text])
+            audio = await synthesize_base64(
+                text,
+                _chatterbox_settings(),
+                style=input.get("style", {}),
+            )
             return {"audio": audio, "success": True}
         except Exception as e:
             return {"error": str(e), "success": False}

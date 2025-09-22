@@ -46,7 +46,7 @@ fi
 # Check for other critical dependencies
 # Include playwright so browser tools load reliably. Avoid bare importing browser_use
 # here since it may attempt to touch ~/.config during import; we do a safe check.
-REQUIRED_MODULES=("flask" "litellm" "mcp" "kokoro" "playwright" "aiohttp")
+REQUIRED_MODULES=("flask" "litellm" "mcp" "chatterbox" "playwright" "aiohttp")
 for module in "${REQUIRED_MODULES[@]}"; do
     if ! python3 -c "import $module" 2>/dev/null; then
         echo -e "${YELLOW}Warning: $module not found, installing requirements...${NC}"
@@ -71,6 +71,22 @@ fi
 # Set environment variables (prefer isolated, project-local caches)
 export PYTHONPATH="${PROJECT_DIR}:${PROJECT_DIR}/searxng:${PYTHONPATH}"
 export APPLE_ZERO_MODE="macos_native"
+# Ensure FFmpeg@6 dylibs are visible to torchaudio/torio at process start.
+FFMPEG6_PREFIX="/opt/homebrew/opt/ffmpeg@6"
+if [ -d "${FFMPEG6_PREFIX}/lib" ]; then
+    export COSMIC_FFMPEG_LIB_DIR="${FFMPEG6_PREFIX}/lib"
+    export DYLD_LIBRARY_PATH="${COSMIC_FFMPEG_LIB_DIR}:${DYLD_LIBRARY_PATH}"
+    export DYLD_FALLBACK_LIBRARY_PATH="${COSMIC_FFMPEG_LIB_DIR}:${DYLD_FALLBACK_LIBRARY_PATH}"
+    export LDFLAGS="-L${COSMIC_FFMPEG_LIB_DIR} ${LDFLAGS}"
+    export CPPFLAGS="-I${FFMPEG6_PREFIX}/include ${CPPFLAGS}"
+    export PKG_CONFIG_PATH="${FFMPEG6_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+fi
+# Prefer fast Metal kernels on Apple Silicon and avoid silent CPU fallbacks.
+export PYTORCH_MPS_FAST_MATH=1
+export PYTORCH_MPS_PREFER_METAL=1
+export PYTORCH_ENABLE_MPS_FALLBACK=0
+export PYTORCH_MPS_HIGH_WATERMARK_RATIO=1.0
+export PYTORCH_MPS_LOW_WATERMARK_RATIO=0.9
 # Keep Playwright assets under project tmp to avoid touching user Chrome
 export PLAYWRIGHT_BROWSERS_PATH="${PROJECT_DIR}/tmp/playwright"
 # Keep browser-use configs isolated to project tmp

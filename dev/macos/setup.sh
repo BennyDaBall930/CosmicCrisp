@@ -34,7 +34,21 @@ fi
 
 # --- Step 2: Install System Dependencies ---
 echo -e "\n${GREEN}Step 2: Installing system dependencies with Homebrew...${NC}"
-brew install ffmpeg portaudio poppler tesseract libsndfile coreutils gnu-sed jq wget git tmux
+# Prefer FFmpeg 6 so torchaudio can locate the expected libav* dylibs.
+brew install ffmpeg@6 || brew upgrade ffmpeg@6
+brew install portaudio poppler tesseract libsndfile coreutils gnu-sed jq wget git tmux
+
+FFMPEG6_PREFIX="/opt/homebrew/opt/ffmpeg@6"
+if [ -d "${FFMPEG6_PREFIX}/lib" ]; then
+    echo "Configuring environment variables for FFmpeg@6 runtime…"
+    # Ensure the dylibs are discoverable during future launches (DYLD_* read at exec time).
+    export DYLD_LIBRARY_PATH="${FFMPEG6_PREFIX}/lib:${DYLD_LIBRARY_PATH}"
+    export DYLD_FALLBACK_LIBRARY_PATH="${FFMPEG6_PREFIX}/lib:${DYLD_FALLBACK_LIBRARY_PATH}"
+    export LDFLAGS="-L${FFMPEG6_PREFIX}/lib ${LDFLAGS}"
+    export CPPFLAGS="-I${FFMPEG6_PREFIX}/include ${CPPFLAGS}"
+    export PKG_CONFIG_PATH="${FFMPEG6_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+    export COSMIC_FFMPEG_LIB_DIR="${FFMPEG6_PREFIX}/lib"
+fi
 
 # --- Step 3: Setup Python Virtual Environment ---
 echo -e "\n${GREEN}Step 3: Setting up Python virtual environment...${NC}"
@@ -63,7 +77,9 @@ source venv/bin/activate
 
 # --- Step 4: Install Python Dependencies ---
 echo -e "\n${GREEN}Step 4: Installing Python dependencies...${NC}"
+export PIP_NO_BUILD_ISOLATION=1
 pip install --upgrade pip
+pip install "numpy<2" wheel
 echo "Installing root requirements..."
 pip install -r requirements.txt
 

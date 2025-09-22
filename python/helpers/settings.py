@@ -4,13 +4,30 @@ import json
 import os
 import re
 import subprocess
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, Optional, TypedDict, cast
 
 import models
 from python.helpers import runtime, whisper, defer, git
 from . import files, dotenv
 from python.helpers.print_style import PrintStyle
 from python.helpers.providers import get_providers
+
+
+class ChatterboxSettings(TypedDict, total=False):
+    device: Optional[str]
+    multilingual: bool
+    sample_rate: int
+    exaggeration: float
+    cfg: float
+    audio_prompt_path: Optional[str]
+    language_id: Optional[str]
+    max_chars: int
+    join_silence_ms: int
+
+
+class TTSSettings(TypedDict):
+    engine: Literal["chatterbox"]
+    chatterbox: ChatterboxSettings
 
 
 class Settings(TypedDict):
@@ -92,7 +109,7 @@ class Settings(TypedDict):
     stt_silence_duration: int
     stt_waiting_timeout: int
 
-    tts_kokoro: bool
+    tts: TTSSettings
 
     mcp_servers: str
     mcp_client_init_timeout: int
@@ -985,17 +1002,88 @@ def convert_out(settings: Settings) -> SettingsOutput:
     )
 
     # TTS fields
-    tts_fields: list[SettingsField] = []
-
-    tts_fields.append(
+    tts_settings = settings["tts"]
+    chatterbox_settings = tts_settings["chatterbox"]
+    tts_fields: list[SettingsField] = [
         {
-            "id": "tts_kokoro",
-            "title": "Enable Kokoro TTS",
-            "description": "Enable higher quality server-side AI (Kokoro) instead of browser-based text-to-speech.",
+            "id": "tts_engine",
+            "title": "TTS engine",
+            "description": "Select the Text-to-Speech engine.",
+            "type": "select",
+            "value": tts_settings.get("engine", "chatterbox"),
+            "options": [
+                {"value": "chatterbox", "label": "Chatterbox"},
+            ],
+        },
+        {
+            "id": "tts_chatterbox_device",
+            "title": "Chatterbox device",
+            "description": "Preferred device for generation (auto selects the best available).",
+            "type": "select",
+            "value": chatterbox_settings.get("device") or "auto",
+            "options": [
+                {"value": "auto", "label": "Auto"},
+                {"value": "mps", "label": "Apple GPU (MPS)"},
+                {"value": "cuda", "label": "CUDA"},
+                {"value": "cpu", "label": "CPU"},
+            ],
+        },
+        {
+            "id": "tts_chatterbox_multilingual",
+            "title": "Chatterbox multilingual mode",
+            "description": "Enable the multilingual checkpoint (23 supported languages).",
             "type": "switch",
-            "value": settings["tts_kokoro"],
-        }
-    )
+            "value": chatterbox_settings.get("multilingual", False),
+        },
+        {
+            "id": "tts_chatterbox_language_id",
+            "title": "Language ID",
+            "description": "Language code used when multilingual mode is enabled (e.g. en, fr, zh).",
+            "type": "text",
+            "value": chatterbox_settings.get("language_id", "en"),
+        },
+        {
+            "id": "tts_chatterbox_exaggeration",
+            "title": "Emotion (exaggeration)",
+            "description": "Adjust vocal intensity. Higher values add more emotion (default 0.5).",
+            "type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
+            "value": chatterbox_settings.get("exaggeration", 0.5),
+        },
+        {
+            "id": "tts_chatterbox_cfg",
+            "title": "CFG (style/pacing)",
+            "description": "Lower values slow pacing; higher increases adherence (default 0.5).",
+            "type": "range",
+            "min": 0,
+            "max": 1,
+            "step": 0.05,
+            "value": chatterbox_settings.get("cfg", 0.5),
+        },
+        {
+            "id": "tts_chatterbox_audio_prompt_path",
+            "title": "Reference voice path",
+            "description": "Optional 7-20s reference clip for zero-shot voice cloning.",
+            "type": "text",
+            "value": chatterbox_settings.get("audio_prompt_path") or "",
+        },
+        {
+            "id": "tts_chatterbox_max_chars",
+            "title": "Chunk size (characters)",
+            "description": "Maximum characters per generation chunk.",
+            "type": "number",
+            "value": chatterbox_settings.get("max_chars", 600),
+        },
+        {
+            "id": "tts_chatterbox_join_silence_ms",
+            "title": "Join gap (ms)",
+            "description": "Silence inserted between concatenated chunks.",
+            "type": "number",
+            "value": chatterbox_settings.get("join_silence_ms", 120),
+        },
+    ]
 
     speech_section: SettingsSection = {
         "id": "speech",
@@ -1217,9 +1305,29 @@ def convert_in(settings: dict) -> Settings:
                         current[field["id"]] = _env_to_dict(field["value"])
                     elif field["id"].startswith("api_key_"):
                         current["api_keys"][field["id"]] = field["value"]
+                    elif field["id"].startswith("tts_"):
+                        _apply_tts_field(current, field["id"], field["value"])
                     else:
                         current[field["id"]] = field["value"]
     return current
+
+
+def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None:
+    default_tts = get_default_settings()["tts"]
+    current_tts = settings_dict.get("tts") or {}
+    merged_tts: dict[str, Any] = {"engine": default_tts["engine"],
+                                 "chatterbox": {**default_tts["chatterbox"]}}
+    merged_tts.update(current_tts)
+    chatterbox = {**merged_tts.get("chatterbox", {})}
+
+    if field_id == "tts_engine":
+        merged_tts["engine"] = value or default_tts["engine"]
+    elif field_id.startswith("tts_chatterbox_"):
+        key = field_id.removeprefix("tts_chatterbox_")
+        chatterbox[key] = value
+        merged_tts["chatterbox"] = chatterbox
+
+    settings_dict["tts"] = merged_tts  # type: ignore
 
 
 def get_settings() -> Settings:
@@ -1273,10 +1381,82 @@ def normalize_settings(settings: Settings) -> Settings:
             except (ValueError, TypeError):
                 copy[key] = value  # make default instead
 
+    copy["tts"] = _normalize_tts_settings(copy.get("tts", {}), default["tts"])
+
     # mcp server token is set automatically
     copy["mcp_server_token"] = create_auth_token()
 
     return copy
+
+
+def _normalize_tts_settings(value: dict[str, Any], default: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    engine = value.get("engine") if isinstance(value, dict) else None
+    result["engine"] = str(engine or default["engine"])
+
+    default_cb = default.get("chatterbox", {})
+    incoming_cb = {}
+    if isinstance(value, dict):
+        incoming_cb = value.get("chatterbox", {}) if isinstance(value.get("chatterbox"), dict) else {}
+
+    normalized_cb: dict[str, Any] = {}
+    for key, default_val in default_cb.items():
+        raw = incoming_cb.get(key, default_val)
+        if key == "device":
+            normalized_cb[key] = None if raw in (None, "", "auto") else str(raw)
+            continue
+        if key == "audio_prompt_path":
+            normalized_cb[key] = raw or None
+            continue
+        if key == "language_id":
+            normalized_cb[key] = str(raw) if raw else default_val
+            continue
+        if type(default_val) is bool:
+            normalized_cb[key] = _parse_bool(raw, default_val)
+            continue
+        if isinstance(default_val, int) and type(default_val) is not bool:
+            normalized_cb[key] = _parse_int(raw, default_val)
+            continue
+        if isinstance(default_val, float):
+            normalized_cb[key] = _parse_float(raw, default_val)
+            continue
+        normalized_cb[key] = raw if raw is not None else default_val
+
+    result["chatterbox"] = normalized_cb
+    return result
+
+
+def _parse_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return default
+    if value in (None, ""):
+        return default
+    return bool(value)
+
+
+def _parse_int(value: Any, default: int) -> int:
+    try:
+        if isinstance(value, str) and not value.strip():
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_float(value: Any, default: float) -> float:
+    try:
+        if isinstance(value, str) and not value.strip():
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _adjust_to_version(settings: Settings, default: Settings):
@@ -1397,7 +1577,20 @@ def get_default_settings() -> Settings:
         stt_silence_threshold=0.3,
         stt_silence_duration=1000,
         stt_waiting_timeout=2000,
-        tts_kokoro=True,
+        tts={
+            "engine": "chatterbox",
+            "chatterbox": {
+                "device": None,
+                "multilingual": False,
+                "sample_rate": 24_000,
+                "exaggeration": 0.5,
+                "cfg": 0.35,
+                "audio_prompt_path": None,
+                "language_id": "en",
+                "max_chars": 600,
+                "join_silence_ms": 120,
+            },
+        },
         mcp_servers='{\n    "mcpServers": {}\n}',
         mcp_client_init_timeout=10,
         mcp_client_tool_timeout=120,

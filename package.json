@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "Apple Zero is the macOS-native evolution of the Cosmic Crisp / Agent Zero stack. It combines a unified FastAPI gateway, an async orchestrator with subagents, model-aware memory, and a declarative tool platform that runs entirely on the host (no Docker required).",
   "scripts": {
-    "test": "jest --config jest.config.ts",
-    "test:ci": "jest --runInBand --ci --config jest.config.ts",
+    "test": "jest",
+    "test:ci": "jest --runInBand --ci",
     "lint": "eslint .",
     "qa:all": "npm run test:ci && (uv run pytest -q || pytest -q)",
     "qa:prompts": "ts-node --project tsconfig.json tests/prompts/harness/run.ts"

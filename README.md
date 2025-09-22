@@ -285,7 +285,7 @@ python -m pytest tests/runtime -q
 ## macOS Platform Notes
 
 - Native PTY support (no Docker) lives under `python/adapters/terminal/macos_pty.py` and the terminal manager still powers the web terminal.
-- Voice features use Kokoro/Isabella (`python/helpers/kokoro_tts.py`); disable via `ENABLE_TTS=false` in `.env`.
+- Voice features now use Chatterbox (`python/helpers/chatterbox_tts.py`) with configurable emotion, CFG, language, and reference voice settings; disable via `ENABLE_TTS=false` in `.env` if you prefer browser TTS only.
 - Playwright browsers are installed into `./tmp/playwright` by the setup script; override with `PLAYWRIGHT_BROWSERS_PATH` if you need a shared cache.
 
 For deeper customization, inspect `python/runtime/container.py` to see how singletons are bootstrapped and cached across the runtime.

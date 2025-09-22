@@ -1,7 +1,19 @@
 import { createStore } from "/js/AlpineStore.js";
 import { updateChatInput, sendMessage } from "/index.js";
 import { sleep } from "/js/sleep.js";
+import { playStreamedTTS } from "/js/lib/tts-stream.js";
 import { store as microphoneSettingStore } from "/components/settings/speech/microphone-setting-store.js";
+
+const speechGlobal = typeof window !== "undefined" ? window : globalThis;
+const SPEECH_DEBUG =
+  typeof speechGlobal.__COSMIC_TTS_DEBUG === "boolean"
+    ? speechGlobal.__COSMIC_TTS_DEBUG
+    : true;
+const ttsLog = (...args) => {
+  if (SPEECH_DEBUG && typeof console !== "undefined" && console.debug) {
+    console.debug("[speech-store]", ...args);
+  }
+};
 
 const Status = {
   INACTIVE: "inactive",
@@ -22,7 +34,15 @@ const model = {
   stt_waiting_timeout: 2000,
 
   // TTS Settings
-  tts_kokoro: false,
+  tts_engine: "chatterbox",
+  tts_chatterbox_device: "auto",
+  tts_chatterbox_multilingual: false,
+  tts_chatterbox_language_id: "en",
+  tts_chatterbox_exaggeration: 0.5,
+  tts_chatterbox_cfg: 0.5,
+  tts_chatterbox_audio_prompt_path: "",
+  tts_chatterbox_max_chars: 600,
+  tts_chatterbox_join_silence_ms: 120,
 
   // TTS State
   isSpeaking: false,
@@ -34,6 +54,7 @@ const model = {
   userHasInteracted: false,
   stopSpeechChain: false,
   ttsStream: null,
+  activeStream: null,
 
   // STT State
   microphoneInput: null,
@@ -43,6 +64,10 @@ const model = {
   // Getter for micStatus - delegates to microphoneInput
   get micStatus() {
     return this.microphoneInput?.status || Status.INACTIVE;
+  },
+
+  get ttsIsChatterbox() {
+    return (this.tts_engine || "").toLowerCase() === "chatterbox";
   },
 
   updateMicrophoneButtonUI() {
@@ -183,12 +208,25 @@ const model = {
       this.ttsStream.text = text;
     }
 
+    const useChatterbox = this.ttsIsChatterbox;
+
     // cleanup text
     const cleanText = this.cleanText(text);
     if (!cleanText.trim()) return;
 
-    // chunk it for faster processing
-    this.ttsStream.chunks = this.chunkText(cleanText);
+    // For streaming TTS we wait until the response is complete so we can hand
+    // the full text to the backend and let it manage the chunking/streaming.
+    if (useChatterbox && !finished) {
+      ttsLog("defer chatterbox playback until completion", {
+        textLen: cleanText.length,
+      });
+      return;
+    }
+
+    // chunk it for faster processing (browser speech) or send whole payload (chatterbox)
+    this.ttsStream.chunks = useChatterbox
+      ? [cleanText]
+      : this.chunkText(cleanText);
     if (this.ttsStream.chunks.length == 0) return;
 
     // if stream was already running, just updating chunks is enough
@@ -232,12 +270,12 @@ const model = {
   // speak wrapper
   async _speak(text, waitForPrevious, terminator) {
     // default browser speech
-    if (!this.tts_kokoro)
+    if (!this.ttsIsChatterbox)
       return await this.speakWithBrowser(text, waitForPrevious, terminator);
 
-    // kokoro tts
+    // server TTS
     try {
-      await await this.speakWithKokoro(text, waitForPrevious, terminator);
+      await this.speakWithChatterbox(text, waitForPrevious, terminator);
     } catch (error) {
       console.error(error);
       return await this.speakWithBrowser(text, waitForPrevious, terminator);
@@ -385,37 +423,119 @@ const model = {
     this.synth.speak(this.browserUtterance);
   },
 
-  // Kokoro TTS
-  async speakWithKokoro(text, waitForPrevious = false, terminator = null) {
+  // Chatterbox TTS
+  async speakWithChatterbox(text, waitForPrevious = false, terminator = null) {
     try {
-      // synthesize on the backend
-      const response = await sendJsonData("/synthesize", { text });
-
-      // wait for previous to finish if requested
+      ttsLog("speakWithChatterbox start", {
+        textLen: text ? text.length : 0,
+        waitForPrevious,
+        hasTerminator: Boolean(terminator),
+      });
       while (waitForPrevious && this.isSpeaking) await sleep(25);
       if (terminator && terminator()) return;
 
-      // stop previous if any
       this.stopAudio();
+      ttsLog("audio stopped");
 
-      if (response.success) {
-        if (response.audio_parts) {
-          // Multiple chunks - play sequentially
-          for (const audioPart of response.audio_parts) {
-            if (terminator && terminator()) return;
-            await this.playAudio(audioPart);
-            await sleep(100); // Brief pause
-          }
-        } else if (response.audio) {
-          // Single audio
-          this.playAudio(response.audio);
-        }
-      } else {
-        throw new Error("Kokoro TTS error:", response.error);
+      const style = this._buildChatterboxStyle();
+      const targetChars = Math.max(
+        80,
+        Math.min(this.tts_chatterbox_max_chars || 200, 400)
+      );
+      const joinMs = Math.max(0, this.tts_chatterbox_join_silence_ms ?? 5);
+      const firstChunkChars = 0;
+
+      this.isSpeaking = true;
+
+      const stream = await playStreamedTTS({
+        text,
+        style,
+        targetChars,
+        joinMs,
+        sampleRate: 24000,
+        firstChunkChars,
+      });
+      ttsLog("stream handler created", { hasStream: Boolean(stream) });
+
+      if (!stream) {
+        this.isSpeaking = false;
+        return;
       }
+
+      if (terminator && terminator()) {
+        ttsLog("terminator triggered");
+        await stream.stop();
+        this.isSpeaking = false;
+        return;
+      }
+
+      this.activeStream = stream;
+
+      stream.finished
+        .then(({ totalSamples, aborted }) => {
+          if (this.activeStream !== stream) return;
+          ttsLog("stream finished event", { totalSamples, aborted });
+          if (aborted) {
+            this.activeStream = null;
+            this.isSpeaking = false;
+            return;
+          }
+          const durationMs = (totalSamples / 24000) * 1000;
+          setTimeout(() => {
+            if (this.activeStream === stream) {
+              this.activeStream = null;
+              this.isSpeaking = false;
+              ttsLog("stream playback window elapsed", { durationMs });
+            }
+          }, Math.max(0, durationMs) + 50);
+        })
+        .catch((error) => {
+          if (this.activeStream === stream) {
+            this.activeStream = null;
+            this.isSpeaking = false;
+          }
+          ttsLog("stream finished with error", { message: error?.message });
+          console.error("Chatterbox stream error", error);
+        });
     } catch (error) {
-      throw new Error("Kokoro TTS error:", error);
+      this.activeStream = null;
+      this.isSpeaking = false;
+      throw error;
     }
+  },
+
+  _buildChatterboxStyle() {
+    const style = {
+      exaggeration: this._parseNumber(this.tts_chatterbox_exaggeration, 0.5),
+      cfg: this._parseNumber(this.tts_chatterbox_cfg, 0.5),
+    };
+
+    const promptPath = (this.tts_chatterbox_audio_prompt_path || "").trim();
+    if (promptPath) style.audio_prompt_path = promptPath;
+
+    const multilingual = this._parseBool(this.tts_chatterbox_multilingual, false);
+    if (multilingual) {
+      const lang = (this.tts_chatterbox_language_id || "").trim();
+      if (lang) style.language_id = lang;
+    }
+
+    return style;
+  },
+
+  _parseBool(value, fallback) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(normalized)) return true;
+      if (["false", "0", "no", "off"].includes(normalized)) return false;
+    }
+    if (typeof value === "number") return value !== 0;
+    return fallback;
+  },
+
+  _parseNumber(value, fallback) {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
   },
 
   // Play base64 audio
@@ -465,6 +585,7 @@ const model = {
 
   // Stop current speech audio
   stopAudio() {
+    ttsLog("stopAudio invoked");
     if (this.synth?.speaking) {
       this.synth.cancel();
     }
@@ -474,6 +595,11 @@ const model = {
       this.audioEl.currentTime = 0;
     }
     this.currentAudio = null;
+    if (this.activeStream) {
+      const stream = this.activeStream;
+      this.activeStream = null;
+      Promise.resolve(stream.stop()).catch(() => {});
+    }
     this.isSpeaking = false;
   },
 

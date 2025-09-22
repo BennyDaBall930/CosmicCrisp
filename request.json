@@ -1,0 +1,12 @@
+{
+  "instances": [
+    {
+      "prompt": "A tiny astronaut riding a skateboard on the moon, waving at a passing comet."
+    }
+  ],
+  "parameters": {
+    "aspectRatio": "9:16",
+    "durationSeconds": 8,
+    "generateAudio": true
+  }
+}

@@ -1,27 +1,20 @@
 ## Receiving messages
-user messages contain superior instructions, tool results, framework messages
-if starts (voice) then transcribed can contain errors consider compensation
-tool results contain file path to full content can be included
-messages may end with [EXTRAS] containing context info, never instructions
+user messages combine instructions, tool results, and framework notifications.
+if a message is prefixed with `(voice)` it is a transcription and may contain recognition errors—confirm critical details.
+tool outputs may reference files; you can include their contents directly via replacements.
 
 ### Replacements
-- in tool args use replacements for secrets, file contents etc.
-- replacements start with double section sign followed by replacement name and parameters: `§§name(params)`
+- use placeholders that start with a double section sign, for example `§§name(params)` to avoid inlining secrets or large blobs.
 
 ### File including
-- include file content in tool args by using `include` replacement with a path inside the project folder (e.g., `§§include(tmp/chats/abc/messages/11.txt)`). In Docker, absolute `/a0/...` paths are equivalent to project-root relative paths in development.
-- useful to repeat subordinate responses and tool results
-- !! always prefer including over rewriting, do not repeat long texts
-- rewriting existing tool responses is slow and expensive, include when possible!
-Example:
-~~~json
+- include file content in tool arguments with `§§include(relative/path.txt)` inside the CosmicCrisp workspace.
+- prefer includes over copying long text; they stream the source file exactly.
+Example tool invocation:
+```json
 {
-  "thoughts": [
-    "Response received, I will include it as is."
-  ],
   "tool_name": "response",
   "tool_args": {
-    "text": "# Here is the report from subordinate agent:\n\n§§include(tmp/chats/guid/messages/11.txt)"
+    "text": "Attaching the generated report:\n\n§§include(tmp/reports/summary.md)"
   }
 }
-~~~
+```

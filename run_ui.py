@@ -8,6 +8,9 @@ from functools import wraps
 import inspect
 import asyncio
 import threading
+import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from flask import Flask, request, Response, session
 from flask_basicauth import BasicAuth
 from a2wsgi import ASGIMiddleware, WSGIMiddleware
@@ -19,6 +22,44 @@ from python.helpers import runtime, dotenv, process
 from python.helpers.extract_tools import load_classes_from_folder
 from python.helpers.api import ApiHandler
 from python.helpers.print_style import PrintStyle
+
+
+def _configure_logging() -> Path:
+    """Configure root logging to write both to stdout and rotating file."""
+
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = log_dir / f"runtime-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    os.environ["A0_LOG_FILE"] = str(log_file)
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+
+    root_logger.setLevel(logging.DEBUG)
+
+    file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root_logger.addHandler(stream_handler)
+
+    logging.getLogger("werkzeug").setLevel(logging.INFO)
+    logging.getLogger("urllib3").setLevel(logging.INFO)
+
+    PrintStyle().print(f"Logging to {log_file}")
+    return log_file
+
+
+LOG_FILE_PATH = _configure_logging()
 
 
 # Set the new timezone to 'UTC'

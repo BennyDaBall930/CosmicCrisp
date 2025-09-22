@@ -23,6 +23,7 @@ from python.helpers.providers import get_provider_config
 from python.helpers.rate_limiter import RateLimiter
 from python.helpers.tokens import approximate_tokens
 from python.helpers.defer import EventLoopThread
+from pydantic import ConfigDict
 
 from langchain_core.language_models.chat_models import SimpleChatModel
 from langchain_core.outputs.chat_generation import ChatGenerationChunk
@@ -148,11 +149,12 @@ class LiteLLMChatWrapper(SimpleChatModel):
     model_name: str
     provider: str
     kwargs: dict = {}
-    
-    class Config:
-        arbitrary_types_allowed = True
-        extra = "allow"  # Allow extra attributes
-        validate_assignment = False  # Don't validate on assignment
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        extra="allow",
+        validate_assignment=False,
+    )
 
     def __init__(self, model: str, provider: str, model_config: Optional[ModelConfig] = None, **kwargs: Any):
         model_value = f"{provider}/{model}"
