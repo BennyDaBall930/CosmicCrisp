@@ -50,19 +50,14 @@ async def preload():
                 mlx_settings = current.get("apple_mlx", {})
                 if not mlx_settings.get("enabled", False):
                     return
-                # Launch MLX server as subprocess
-                settings_path = os.path.join(runtime.get_application_root(), "tmp", "settings.json")
-                if not os.path.exists(settings_path):
-                    PrintStyle().error("MLX settings file not found")
-                    return
-                proc = subprocess.Popen([
-                    "python", "-m", "python.models.apple_mlx_provider", settings_path
-                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=runtime.get_application_root())
-                PrintStyle().print(f"MLX server launched (PID: {proc.pid})")
-                # Store PID for tracking
-                with open(os.path.join(runtime.get_application_root(), "logs", "mlx_pid.txt"), "w") as f:
-                    f.write(str(proc.pid))
-                # Don't wait, let it run
+                
+                PrintStyle().print("Preloading Apple MLX model...")
+                # Get the provider instance, which will cache it
+                provider = models.get_chat_model("apple_mlx", "")
+                # Aload the model to warm it up
+                await provider.aload()
+                PrintStyle().print("Apple MLX model preloaded successfully.")
+
             except Exception as e:
                 PrintStyle().error(f"Error in preload_mlx: {e}")
 

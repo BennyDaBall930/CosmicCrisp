@@ -622,9 +622,26 @@ def get_chat_model(provider: str, name: str, model_config: Optional[ModelConfig]
         spec.loader.exec_module(apple_mlx_module)
         AppleMLXProvider = apple_mlx_module.AppleMLXProvider
 
-        # Use settings to initialize provider
+        # Cache and reuse the provider instance
+        model_path = apple_mlx_settings.get("model_path", "")
+        if _current_mlx_provider and getattr(_current_mlx_provider, '_model_path', None) == model_path:
+            # Return cached provider if model path is the same
+            return _current_mlx_provider
+
+        # If provider exists but model path is different, unload the old one first
+        if _current_mlx_provider:
+            import asyncio
+            # Ensure the unload is awaited to prevent race conditions
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(_current_mlx_provider.aunload())
+            else:
+                loop.run_until_complete(_current_mlx_provider.aunload())
+
+
+        # Create and cache a new provider instance
         _current_mlx_provider = AppleMLXProvider(
-            model_path=apple_mlx_settings.get("model_path", ""),
+            model_path=model_path,
             max_kv_size=apple_mlx_settings.get("max_kv_size", 2048),
             temperature=apple_mlx_settings.get("temperature", 0.7),
             top_p=apple_mlx_settings.get("top_p", 0.8),
@@ -634,8 +651,7 @@ def get_chat_model(provider: str, name: str, model_config: Optional[ModelConfig]
             wired_limit_mb=apple_mlx_settings.get("wired_limit_mb"),
             cache_limit_mb=apple_mlx_settings.get("cache_limit_mb")
         )
-        # This is a bit of a hack, but we need to pass the system message to the provider
-        # The unified_call method will handle the rest.
+        
         if hasattr(_current_mlx_provider, "unified_call"):
             _current_mlx_provider.system_message = kwargs.get("system_message", "")
         return _current_mlx_provider  # type: ignore
