@@ -1,65 +1,261 @@
-# Apple Zero Runtime
+# 🚀 Apple Zero Runtime
 
-Apple Zero is the macOS-native evolution of the Cosmic Crisp / Agent Zero stack. It combines a unified FastAPI gateway, an async orchestrator with subagents, model-aware memory, and a declarative tool platform that runs entirely on the host (no Docker required).
+<div align="center">
+<h2>🤖 The Future of AI Agents on macOS 🍎</h2>
 
-## Table of Contents
+<p><em>"The macOS-native evolution of Agent Zero - where AI meets Apple Silicon magic!"</em></p>
 
-1. [Architecture Overview](#architecture-overview)
-2. [Quick Start](#quick-start)
-3. [Configuration Essentials](#configuration-essentials)
-4. [Memory & Context Management](#memory--context-management)
-5. [Token Budgets & Context Fitting](#token-budgets--context-fitting)
-6. [Subagents & Autonomy](#subagents--autonomy)
-7. [UI & Human-in-the-Loop Browsing](#ui--human-in-the-loop-browsing)
-8. [Observability & Logging](#observability--logging)
-9. [Migration & Compatibility Notes](#migration--compatibility-notes)
-10. [Testing](#testing)
-11. [macOS Platform Notes](#macos-platform-notes)
+[![Stars](https://img.shields.io/github/stars/your-repo/cosmiccrisp?style=for-the-badge&logo=github)](https://github.com/your-repo/cosmiccrisp)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](LICENSE)
+[![macOS](https://img.shields.io/badge/platform-macOS-lightgrey?style=for-the-badge&logo=apple)](https://www.apple.com/macos/)
+
+</div>
 
 ---
 
-## Architecture Overview
+## 🤔 Why Apple Zero?
 
-```mermaid
-graph TD
-    UI[Web UI / CLI] -->|REST & SSE| API[FastAPI Gateway (python/runtime/api/app.py)]
-    API --> Container[Runtime Container (python/runtime/container.py)]
-    Container --> Orchestrator[Agent Orchestrator]
-    Container --> Tokens[Token Service]
-    Container --> Memory[Composite Memory Store]
-    Container --> ModelRouter[Model Router]
-    Container --> Tools[Tool Registry]
-    Container --> Prompts[Prompt Manager]
-    Orchestrator --> Subagents[Subagent Manager]
-    Orchestrator --> EventBus[Event Bus]
-    Orchestrator --> Observability[Observability]
-    ModelRouter -->|LiteLLM / LM Studio| Providers[Model Providers]
-    Memory --> Embeddings[Embeddings Service]
-    Tools --> Browser[Browser / Search / Code / Shell]
+Ever wish your Mac could just... do stuff? Like actually be helpful beyond reminding you about your next meeting?
+
+**Apple Zero** is here to change that! We're talking **AI-powered automation** that runs natively on your Mac with zero Docker headaches. Whether you need to research complex topics, write code, browse the web, or even plan your next vacation, Apple Zero has got you covered!
+
+### ✨ What Makes It Special?
+
+- 🍎 **Truly Native** - No containers, no VMs, just pure macOS goodness
+- 🔧 **Modular & Extensible** - Mix and match AI models, tools, and capabilities
+- 🧠 **Smart Memory** - Remembers your context across sessions
+- 🗣️ **Voice Powered** - Make your Mac speak in your favorite voice (native voice cloning)
+- 🚀 **Blazing Fast** - Apple Silicon optimized with proper MPS support
+- 🎯 **Agent-Like** - Handles complex multi-step tasks autonomously
+
+> "It's like having a team of AI interns who actually follow instructions." - A satisfied user (probably)
+
+---
+
+## 🏗️ Architecture at a Glance
+
+```
+User Request 🚀 → Web UI/CLI → FastAPI Gateway → Container Runtime
+                                                  ↓
+                                        ┌─────────────────┐
+                                        │   Orchestrator   │  ← Goal → Plan → Execute Loop
+                                        └─────────────────┘
+                                                ↓
+                        ┌─────────────────┬─────────────────┬─────────────────┐
+                        │     Memory      │     Model       │     Tools       │
+                        │   (SQLite +     │   Router        │   (Browser,     │
+                        │    FAISS)       │                 │    Shell, etc)  │
+                        └─────────────────┴─────────────────┴─────────────────┘
 ```
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant UI as Web UI / CLI
-    participant API as /runtime FastAPI
-    participant Orchestrator
-    participant Memory
-    participant Router as Model Router
-    participant Tools
+---
 
-    User->>UI: submit goal / chat
-    UI->>API: POST /runtime/run (SSE)
-    API->>Orchestrator: stream_run(payload)
-    Orchestrator->>Memory: similar(goal, k)
-    Orchestrator->>Tokens: fit(messages, model, snippets)
-    Orchestrator->>Router: select(task_type, capabilities)
-    Orchestrator->>Tools: invoke(tool, args)
-    Orchestrator->>Memory: add(summary/fact)
-    Orchestrator-->>API: SSE events + tokens
-    API-->>UI: timeline, manual-browser prompts, summaries
-    UI-->>User: live planner/summary view
+## 🎯 Key Features
+
+### 🧠 Smart Memory System
+Our hybrid memory combines local SQLite + vector search with optional Mem0 for that extra brain boost!
+
+### 🗣️ Chatterbox TTS
+Gone are the days of robotic voices! Apple Zero speaks like a human... most of the time. (We're working on improving latency...)
+
+### 🛠️ Tool Ecosystem
+Browser automation? ✓ Code execution? ✓ File operations? ✓ Email sending? ✓ Database queries? ✓
+
+### 🔄 Model Router
+Automatically picks the best AI model for your task. Efficient as hell, expensive as heaven.
+
+### 📊 Live Observability
+Track everything with metrics, logs, and shiny dashboards. Because who doesn't love graphs?
+
+---
+
+## 🚀 Quick Start (You're 2 Minutes Away from AI Glory!)
+
+### Prerequisites
+- macOS 12+ (sorry, Tim Cook's making it hard for older Macs)
+- Python 3.10+
+- A caffeine source (coffee/tea/energy drinks)
+
+### 🚀 Launch Sequence
+
+```bash
+# 1. Bootstrap everything (this is the magic button)
+./dev/macos/setup.sh
+
+# 2. Blast off!
+./dev/macos/run.sh
+
+# 3. Your AI awaits...
+open http://localhost:8080
 ```
+
+That's it! 🤯
+
+---
+
+## ⚙️ Configuration (The Important Bits)
+
+Apple Zero is highly configurable. Here's the beer-to-water ratio you need:
+
+### Essential Environment Variables
+
+```env
+# AI Models (the brain)
+OPENAI_API_KEY=your_key_here
+GEMINI_API_KEY=your_other_key
+
+# Memory (the long-term brain)
+MEM0_ENABLED=true  # For that extra storage
+MEM0_API_KEY=mem0_key
+
+# TTS Features (make it speak!)
+ENABLE_TTS=true
+TTS_LANGUAGE_ID=en  # or 'es', 'fr', 'de', your call
+TTS_EXAGGERATION=0.5  # 0=boring robot, 1=very excited robot
+```
+
+### Advanced Configuration (`runtime.toml`)
+
+```toml
+[router]
+default_model = "gpt-4o"  # Or whatever you can afford
+
+[[router.models]]
+name = "gpt-4o"
+priority = 1  # Higher = preferred
+capabilities = ["general", "code", "research"]
+
+[embeddings]
+provider = "openai"  # Local options available too
+model = "text-embedding-3-large"
+
+[memory]
+db_path = "./data/runtime.sqlite"
+```
+
+## 📋 What's Inside This Delicious README
+
+Jump to your favorite section:
+
+- [🎬 Voice & TTS Magic](#-voice--tts-magic)
+- [🧠 Memory Systems (The Brain)](#-memory-systems-the-brain)
+- [⚠️ Migration Guide](#-migration-guide-from-older-cosmic-crisp-versions)
+- [🧪 Testing & Quality Assurance](#-testing--quality-assurance)
+- [🍎 macOS-Specific Goodness](#-macos-specific-goodness)
+- [🙏 Credits & Attribution](#-credits--attribution)
+
+---
+
+## 🎬 Voice & TTS Magic
+
+Want your Mac to finally have something interesting to say? 🎙️
+
+**Apple Zero** ditches the robotic monotone for **Chatterbox TTS** - our brand new voice system that's actually pleasant to listen to!
+
+### 🚀 What Makes Our Voices So Dang Good?
+
+- **Human-Like Speech**: Feels like a real person is talking to you
+- **Emotional Range**: Make it whisper sweet nothings or yell enthusiastically
+- **Multi-Language Party**: English, French, German, Spanish... your choice!
+- **Voice Cloning**: Upload a reference audio and make it sound like your favorite celebrity (legal version, of course)
+- **GPU Goodness**: Apple Silicon MPS acceleration for ultra-smooth performance
+
+### ⚡ Quick Voice Configuration
+
+```env
+# Make your Mac chatty
+ENABLE_TTS=true
+
+# Voice personality (0=dull robot, 1=wild excitement)
+TTS_EXAGGERATION=0.6
+
+# Language (en/fr/de/es)
+TTS_LANGUAGE_ID=en
+```
+
+*Pro tip: Set TTS_EXAGGERATION to 0.9 if you're feeling dramatic today!*
+
+### 🔄 Migrating from "Robot Beeps"?
+
+We ditched the old Kokoro TTS engine (rip) for Chatterbox. It's that good. Just update your config - we'll handle the magic!
+
+## Voice & TTS Features
+
+**BREAKING CHANGE**: The Kokoro TTS engine has been completely removed and replaced with Chatterbox TTS for enhanced voice quality and features.
+
+### Key Improvements Over Kokoro
+- **Enhanced Audio Quality**: Advanced neural voice synthesis with emotion control
+- **Multi-Language Support**: Native multilingual capabilities with proper accent handling
+- **Reference Voice Cloning**: Ability to style voice output based on audio samples
+- **Fine-Grained Control**: Adjustable emotion intensity, CFG (classifier-free guidance), and device targeting
+- **Performance**: Optimized for both CPU and GPU acceleration (MPS, CUDA, CPU fallback)
+
+### Configuration Options
+
+| Feature | Environment Variable | Default | Description |
+| --- | --- | --- | --- |
+| **System Enable/Disable** | `ENABLE_TTS` | `true` | Completely disable TTS if set to `false` |
+| **Voice Config File** | `TTS_CONFIG_PATH` | (runtime lookup) | Path to JSON/TOML configuration file |
+| **Multilingual Model** | `TTS_MULTILINGUAL` | `false` | Enable multilingual Chatterbox model |
+| **Sample Rate** | `TTS_SAMPLE_RATE` | `24000` | Audio output sample rate (Hz) |
+| **Emotion Intensity** | `TTS_EXAGGERATION` | `0.5` | Emotional expression level (0.0-1.0) |
+| **Voice Consistency** | `TTS_CFG` | `0.35` | Classifier-free guidance strength |
+| **Reference Audio** | `TTS_AUDIO_PROMPT_PATH` | (none) | WAV file for voice style reference |
+| **Language** | `TTS_LANGUAGE_ID` | `"en"` | Language code for multilingual model |
+| **Max Text Length** | `TTS_MAX_CHARS` | `600` | Maximum characters per synthesis chunk |
+| **Silence Between Chunks** | `TTS_JOIN_SILENCE_MS` | `120` | Milliseconds of silence between text chunks |
+
+### TTS Configuration Examples
+
+**Basic Setup (.env):**
+```env
+# Simple English voice with moderate emotion
+ENABLE_TTS=true
+TTS_EXAGGERATION=0.6
+TTS_CFG=0.4
+TTS_LANGUAGE_ID=en
+```
+
+**Advanced Setup (runtime.toml):**
+```toml
+[tts.chatterbox]
+multilingual = false  # Set to true for language support
+sample_rate = 24000
+exaggeration = 0.5   # Voice emotion intensity
+cfg = 0.35          # Voice consistency
+max_chars = 600     # Text chunk size
+join_silence_ms = 120 # Gap between chunks
+
+# Optional reference voice (copy-paste audio sample)
+# audio_prompt_path = "./reference-voice.wav"
+
+# Device targeting (auto-detects MPS/CUDA/CPU)
+# device = "auto"  # or "mps", "cuda", "cpu"
+```
+
+**Multilingual Voices:**
+```env
+TTS_MULTILINGUAL=true
+TTS_LANGUAGE_ID=de  # German, French, Spanish, etc.
+```
+
+### Fallback to Browser TTS
+
+If Chatterbox fails to initialize or TTS is disabled, the system falls back to pyttsx-based browser TTS. This provides basic cross-platform compatibility but lacks the advanced features of Chatterbox.
+
+### Migration from Kokoro
+
+**❌ Breaking Changes:**
+- `tts_kokoro` settings in configuration files are completely ignored
+- Kokoro-dependent voice parameters must be migrated to Chatterbox equivalents
+- Existing voice configuration files need format updates
+
+**✅ Migration Path:**
+1. Remove all `tts_kokoro` configuration blocks
+2. Add Chatterbox configuration using the settings above
+3. Adjust emotion levels (Kokoro values may not translate directly)
+4. Test audio output quality after migration
+5. Enable `ENABLE_TTS=false` temporarily to use browser fallback during transition
 
 ## Quick Start
 
@@ -284,8 +480,47 @@ python -m pytest tests/runtime -q
 
 ## macOS Platform Notes
 
-- Native PTY support (no Docker) lives under `python/adapters/terminal/macos_pty.py` and the terminal manager still powers the web terminal.
-- Voice features now use Chatterbox (`python/helpers/chatterbox_tts.py`) with configurable emotion, CFG, language, and reference voice settings; disable via `ENABLE_TTS=false` in `.env` if you prefer browser TTS only.
-- Playwright browsers are installed into `./tmp/playwright` by the setup script; override with `PLAYWRIGHT_BROWSERS_PATH` if you need a shared cache.
+- **Native PTY Support**: No Docker required - terminal functionality lives under `python/adapters/terminal/macos_pty.py`
+- **Web Terminal**: Full pseudo-terminal support for interactive shell sessions in the web UI
+- **Playwright Browsers**: Automatically installed into `./tmp/playwright` by the setup script; override with `PLAYWRIGHT_BROWSERS_PATH` if you need a shared cache
+- **FFmpeg Integration**: Voice synthesis leverages system FFmpeg installation for audio processing
+- **MPS Acceleration**: Automatic detection and utilization of Apple Silicon GPU acceleration for TTS and other compute-intensive operations
 
 For deeper customization, inspect `python/runtime/container.py` to see how singletons are bootstrapped and cached across the runtime.
+
+---
+
+## 🙏 Credits & Attribution
+
+This project is the macOS evolution of the amazing **Agent Zero** framework! Apple Zero wouldn't be possible without the incredible work of the Agent Zero team and contributors.
+
+### 🌟 The Agent Zero Team
+
+A huge thank you to the original Agent Zero contributors:
+- **[Agent Zero Core Team](https://github.com/frdel/agent_zero)** - For creating the foundation that made all of this possible!
+
+### 🤝 Special Thanks to
+
+- **Homebrew Community** - Making macOS package management actually bearable
+- **LiteLLM Contributors** - For the unified LLM API that makes connecting to dozens of models painless
+- **FastAPI Team** - Because async APIs should be this easy
+- **Playwright** - Web automation that's actually reliable (mostly!)
+- **Faiss Contributors** - Vector search that doesn't make your brain hurt
+
+### 📜 License & Acknowledgments
+
+This project inherits the wonderful MIT license from the original Cosmic Crisp / Agent Zero projects. We're proud to build upon such solid foundations!
+
+---
+
+<div align="center">
+
+<h3>🤖 Ready to Unleash AI on Your Mac? 🚀</h3>
+
+<p><strong>The future is here, and it's delightfully user-friendly!</strong></p>
+
+[![Get Started](https://img.shields.io/badge/Get%20Started-Today-green?style=for-the-badge&logo=apple)](./dev/macos/setup.sh)
+
+<small>"Because who needs boring, when you can have brilliant?" - Apple Zero Team</small>
+
+</div>
