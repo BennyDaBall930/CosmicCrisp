@@ -65,6 +65,24 @@ chat:
   other:
     name: Other OpenAI compatible
     litellm_provider: openai
+  apple_mlx:
+    name: Apple Zero MLX
+    type: local
+    engines:
+      chat:
+        class: AppleMLXProvider
+        module: python.models.apple_mlx_provider
+    fields:
+      chat_model_name:
+        label: "MLX Model Path"
+        placeholder: "/Users/benjamin/models/qwen3-7b-instruct-mlx"
+        required: true
+    defaults:
+      max_kv_size: 2048
+      temperature: 0.7
+      top_p: 0.95
+      wired_limit_mb: 4096
+      cache_limit_mb: 1024
 
 embedding:
   huggingface:

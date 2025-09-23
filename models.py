@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import logging
 import os
+import sys
 from typing import (
     Any,
     Awaitable,
@@ -90,6 +91,11 @@ class ChatChunk(TypedDict):
 
 rate_limiters: dict[str, RateLimiter] = {}
 api_keys_round_robin: dict[str, int] = {}
+
+
+# Global state for MLX provider switching
+_current_mlx_provider = None
+_last_provider = None
 
 def get_api_key(service: str) -> str:
     # get api key for the service
@@ -571,7 +577,69 @@ def _merge_provider_defaults(
 
 
 def get_chat_model(provider: str, name: str, model_config: Optional[ModelConfig] = None, **kwargs: Any) -> LiteLLMChatWrapper:
+    global _last_provider, _current_mlx_provider
     orig = provider.lower()
+
+    # Provider switching hook: unload MLX model when switching away from apple_mlx
+    if _last_provider == "apple_mlx" and orig != "apple_mlx" and _current_mlx_provider:
+        import asyncio
+        # Create task to unload asynchronously
+        asyncio.create_task(_current_mlx_provider.aunload())
+        _current_mlx_provider = None
+
+    _last_provider = orig
+
+    if orig == "apple_mlx":
+        # Handle Apple MLX provider specially - direct MLX integration
+        # Add absolute path to python package for reliable imports
+        import os
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(app_dir)
+        
+        # Load apple_mlx settings from tmp/settings.json
+        import json
+        # Correct settings path relative to the project root
+        settings_path = os.path.join(project_root, "tmp", "settings.json")
+        if not os.path.exists(settings_path):
+             # Fallback for running from within CosmicCrisp dir
+            settings_path = os.path.join(os.path.dirname(project_root), "tmp", "settings.json")
+
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+        apple_mlx_settings = settings.get("apple_mlx", {})
+        
+        # Correct python_path to be inside the app directory
+        python_path = os.path.join(app_dir, "python")
+        if python_path not in sys.path:
+            sys.path.insert(0, python_path)
+
+        import importlib.util
+        provider_path = os.path.join(python_path, "models", "apple_mlx_provider.py")
+        spec = importlib.util.spec_from_file_location("apple_mlx_provider", provider_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load MLX provider from {provider_path}")
+        apple_mlx_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(apple_mlx_module)
+        AppleMLXProvider = apple_mlx_module.AppleMLXProvider
+
+        # Use settings to initialize provider
+        _current_mlx_provider = AppleMLXProvider(
+            model_path=apple_mlx_settings.get("model_path", ""),
+            max_kv_size=apple_mlx_settings.get("max_kv_size", 2048),
+            temperature=apple_mlx_settings.get("temperature", 0.7),
+            top_p=apple_mlx_settings.get("top_p", 0.8),
+            top_k=apple_mlx_settings.get("top_k"),
+            min_p=apple_mlx_settings.get("min_p"),
+            quantization=apple_mlx_settings.get("quantization"),
+            wired_limit_mb=apple_mlx_settings.get("wired_limit_mb"),
+            cache_limit_mb=apple_mlx_settings.get("cache_limit_mb")
+        )
+        # This is a bit of a hack, but we need to pass the system message to the provider
+        # The unified_call method will handle the rest.
+        if hasattr(_current_mlx_provider, "unified_call"):
+            _current_mlx_provider.system_message = kwargs.get("system_message", "")
+        return _current_mlx_provider  # type: ignore
+
     provider_name, kwargs = _merge_provider_defaults("chat", orig, kwargs)
     return _get_litellm_chat(LiteLLMChatWrapper, name, provider_name, model_config, **kwargs)
 
