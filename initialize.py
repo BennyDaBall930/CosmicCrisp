@@ -135,7 +135,14 @@ def initialize_job_loop():
 
 def initialize_preload():
     import preload
-    return defer.DeferredTask().start_task(preload.preload)
+    import asyncio
+    # Run preload synchronously to ensure completion before server starts
+    try:
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            loop.create_task(preload.preload())
+    except RuntimeError:  # No running loop
+        asyncio.run(preload.preload())
 
 
 def _args_override(config):

@@ -632,11 +632,14 @@ def get_chat_model(provider: str, name: str, model_config: Optional[ModelConfig]
         if _current_mlx_provider:
             import asyncio
             # Ensure the unload is awaited to prevent race conditions
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_current_mlx_provider.aunload())
-            else:
-                loop.run_until_complete(_current_mlx_provider.aunload())
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    loop.create_task(_current_mlx_provider.aunload())
+                else:
+                    asyncio.run(_current_mlx_provider.aunload())
+            except RuntimeError:
+                 asyncio.run(_current_mlx_provider.aunload())
 
 
         # Create and cache a new provider instance

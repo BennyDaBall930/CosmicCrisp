@@ -55,8 +55,11 @@ async def preload():
                 # Get the provider instance, which will cache it
                 provider = models.get_chat_model("apple_mlx", "")
                 # Aload the model to warm it up
-                await provider.aload()
-                PrintStyle().print("Apple MLX model preloaded successfully.")
+                if provider and hasattr(provider, 'aload'):
+                    await provider.aload()
+                    PrintStyle().print("Apple MLX model preloaded successfully.")
+                else:
+                    PrintStyle().error("Could not get a valid MLX provider to preload.")
 
             except Exception as e:
                 PrintStyle().error(f"Error in preload_mlx: {e}")
