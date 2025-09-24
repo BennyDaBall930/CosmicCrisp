@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 from ..schema import MemoryItem
@@ -35,7 +36,14 @@ class Mem0Adapter(MemoryStore):
         self._fallback = fallback
         self._client_mode: Optional[str] = None
         self._namespace = namespace
+        self._local_mode = os.getenv("MEM0_LOCAL_MODE", "").lower() in ("true", "1", "yes")
         client = None
+
+        # Log initialization state
+        if self._local_mode:
+            logger.info("Mem0Adapter initialized in local mode with namespace: %s", namespace)
+        else:
+            logger.info("Mem0Adapter initialized in cloud mode with namespace: %s", namespace)
 
         if _LegacyMem0 is not None:
             try:

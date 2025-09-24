@@ -75,6 +75,14 @@ python3.11 -m venv venv
 echo "Activating virtual environment..."
 source venv/bin/activate
 
+# Load environment variables from .env file
+if [ -f ".env" ]; then
+    echo "Loading .env file..."
+    set -a
+    source .env
+    set +a
+fi
+
 # --- Step 4: Install Python Dependencies ---
 echo -e "\n${GREEN}Step 4: Installing Python dependencies...${NC}"
 export PIP_NO_BUILD_ISOLATION=1
@@ -89,8 +97,17 @@ if [ -f "searxng/requirements.txt" ]; then
     pip install -r searxng/requirements.txt -r searxng/requirements-server.txt
 fi
 
-# --- Step 5: Install Playwright Browsers ---
-echo -e "\n${GREEN}Step 5: Installing Playwright browsers...${NC}"
+# --- Step 5: Setup Mem0 with Apple Zero memories ---
+echo -e "\n${GREEN}Step 5: Setting up Mem0 with Apple Zero memories...${NC}"
+if [ -f "scripts/setup_mem0.py" ]; then
+    echo "Running mem0 setup script..."
+    python scripts/setup_mem0.py
+else
+    echo -e "${YELLOW}Warning: mem0 setup script not found at scripts/setup_mem0.py${NC}"
+fi
+
+# --- Step 6: Install Playwright Browsers ---
+echo -e "\n${GREEN}Step 6: Installing Playwright browsers...${NC}"
 # Install Chromium into project-local cache so runtime finds it
 export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/tmp/playwright"
 playwright install chromium
