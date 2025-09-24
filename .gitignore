@@ -49,6 +49,9 @@ knowledge/**
 !knowledge/default/
 !knowledge/default/**
 
+# Ignore custom/main
+knowledge/custom/main/**
+
 # Handle instruments directory
 instruments/**
 !instruments/**/
