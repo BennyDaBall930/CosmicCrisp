@@ -64,3 +64,5 @@ agent_history.gif
 BennyDaBall_Qwen3-30B-A3B-ThinkCode-Linear-FP32-MLX_4bit/
 Qwen3-Yoyo-V3-42B-A3B-Thinking-Total-Recall-qx86-hi-mlx/
 BasedBase-Qwen3-Coder-30B-A3B-Instruct-480B-Distill-V2-MLX-4bit/
+sequential_video_creator.py
+CosmicCrisp/Video_Generation_Projects
