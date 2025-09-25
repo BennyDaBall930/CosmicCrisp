@@ -110,11 +110,134 @@ class GenerationStopCondition(NamedTuple):
     stop_string: str
     stop_tokens: List[int]
 
+
 class GenerationResult(NamedTuple):
     text: str
     tokens: List[Any]  # Simplified for this integration
     top_logprobs: List[List[Any]]
     stop_condition: Optional[GenerationStopCondition]
+
+# ---- Stop-string discovery helpers (HF/LM Studio style) ---------------------
+from pathlib import Path as _Path
+
+def _safe_decode(tokenizer, tok_id: int) -> str:
+    try:
+        return tokenizer.decode([tok_id], skip_special_tokens=False)
+    except Exception:
+        return ""
+
+_DEF_STOP_KEYS = (
+    "stop_strings", "stop", "stops", "stop_words", "stopping_strings",
+)
+
+_COMMON_SENTINELS = (
+    "<|im_end|>", "<|endoftext|>", "</s>", "<|eot_id|>", "<|eot|>", "<|assistant_end|>",
+    "<end_of_turn>",  # Orchestrator/UI boundary marker
+)
+
+def _collect_stop_strings_from_fs(tokenizer, model_path: _Path) -> list[str]:
+    stops: list[str] = []
+
+    # 1) tokenizer-provided EOS token string, if any
+    eos_tok = getattr(tokenizer, "eos_token", None)
+    if isinstance(eos_tok, str) and eos_tok:
+        stops.append(eos_tok)
+
+    # 2) config.json: eos_token_id / eos_token_ids
+    cfg = None
+    cfg_path = model_path / "config.json"
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            if isinstance(cfg.get("eos_token_id"), int):
+                s = _safe_decode(tokenizer, int(cfg["eos_token_id"]))
+                if s:
+                    stops.append(s)
+            if isinstance(cfg.get("eos_token_ids"), list):
+                for tid in cfg["eos_token_ids"]:
+                    if isinstance(tid, int):
+                        s = _safe_decode(tokenizer, tid)
+                        if s:
+                            stops.append(s)
+        except Exception:
+            pass
+
+    # 3) generation_config.json: vendor-specific stop arrays
+    gen_path = model_path / "generation_config.json"
+    if gen_path.exists():
+        try:
+            gen_cfg = json.loads(gen_path.read_text())
+            for k in _DEF_STOP_KEYS:
+                val = gen_cfg.get(k)
+                if isinstance(val, list):
+                    for s in val:
+                        if isinstance(s, str) and s:
+                            stops.append(s)
+                elif isinstance(val, str) and val:
+                    stops.append(val)
+            # Sometimes eos ids are only here
+            for key in ("eos_token_id", "eos_token_ids"):
+                v = gen_cfg.get(key)
+                if isinstance(v, int):
+                    s = _safe_decode(tokenizer, v)
+                    if s:
+                        stops.append(s)
+                elif isinstance(v, list):
+                    for tid in v:
+                        if isinstance(tid, int):
+                            s = _safe_decode(tokenizer, tid)
+                            if s:
+                                stops.append(s)
+        except Exception:
+            pass
+
+    # 4) special_tokens_map.json & tokenizer_config.json: additional_special_tokens and chat sentinels
+    for fname in ("special_tokens_map.json", "tokenizer_config.json"):
+        p = model_path / fname
+        if p.exists():
+            try:
+                d = json.loads(p.read_text())
+                # extra special tokens often include chat sentinels
+                extra = d.get("additional_special_tokens") or []
+                if isinstance(extra, list):
+                    for s in extra:
+                        if isinstance(s, str) and s:
+                            # heuristic: only include likely end markers
+                            if any(x in s.lower() for x in ("end", "eot")) or s in _COMMON_SENTINELS:
+                                stops.append(s)
+                # some repos embed custom fields
+                for k in _DEF_STOP_KEYS:
+                    v = d.get(k)
+                    if isinstance(v, list):
+                        for s in v:
+                            if isinstance(s, str) and s:
+                                stops.append(s)
+                    elif isinstance(v, str) and v:
+                        stops.append(v)
+            except Exception:
+                pass
+
+    # 5) vocab presence check for common sentinels (Qwen, ChatML, etc.)
+    get_vocab = getattr(tokenizer, "get_vocab", None)
+    if callable(get_vocab):
+        vocab = get_vocab()
+        for s in _COMMON_SENTINELS:
+            if s in vocab:
+                stops.append(s)
+
+    # Deduplicate while preserving order
+    dedup: list[str] = []
+    seen = set()
+    for s in stops:
+        if not s:
+            continue
+        if s not in seen:
+            seen.add(s)
+            dedup.append(s)
+    # Always include the orchestrator boundary to guarantee clean stop even if not in vocab
+    if "<end_of_turn>" not in dedup:
+        dedup.append("<end_of_turn>")
+    return dedup
 
 def create_generator(
     model_kit: ModelKit,
@@ -131,21 +254,38 @@ def create_generator(
     max_kv_size: Optional[int] = None,
 ) -> Iterator[GenerationResult]:
     """Simplified create_generator implementation based on LM Studio's approach."""
+    # Respect explicit zeros from caller; only None falls back to defaults
+    temp_v = 0.7 if temp is None else float(temp)
+    top_p_v = 0.95 if top_p is None else float(top_p)
+    min_p_v = 0.0 if min_p is None else float(min_p)
+    top_k_v = 0 if top_k is None else int(top_k)
+
     sampler = make_sampler(
-        temp=temp or 0.7,
-        top_p=top_p or 0.95,
-        min_p=min_p or 0.0,
-        top_k=top_k or 0,
+        temp=temp_v,
+        top_p=top_p_v,
+        min_p=min_p_v,
+        top_k=top_k_v,
     )
 
-    # Simulate generation result structure
-    text_accumulator = ""
-
+    # Build logits processors if needed
     logits_processors = None
     if repetition_penalty and repetition_penalty != 1.0:
         logits_processors = make_logits_processors(
             repetition_penalty=repetition_penalty
         )
+
+    # If caller didn't specify stops, derive them from HF files like LM Studio
+    if stop_strings is None:
+        try:
+            active_stops = _collect_stop_strings_from_fs(model_kit.tokenizer, model_kit.model_path)
+        except Exception:
+            active_stops = []
+    else:
+        active_stops = list(stop_strings)
+
+    text_accumulator = ""
+    emitted_len = 0  # track what we've already yielded to avoid duplicates
+    tail_window = 256  # only scan a small suffix for stop suffix matches
 
     for chunk in mlx_stream_generate(
         model=model_kit.model,
@@ -156,35 +296,39 @@ def create_generator(
         max_kv_size=max_kv_size or model_kit.max_kv_size,
         logits_processors=logits_processors,
     ):
+        # Append and compute the newly produced delta
         text_accumulator += chunk.text
+        delta = text_accumulator[emitted_len:]
 
-        # Check for stop strings
-        stop_condition = None
-        if stop_strings:
-            for stop_string in stop_strings:
-                if stop_string in text_accumulator:
-                    stop_idx = text_accumulator.find(stop_string)
-                    text_to_yield = text_accumulator[:stop_idx + len(stop_string)]
+        # Check for stop strings within the recent tail; cut even if extra text followed in same chunk
+        if active_stops:
+            tail = text_accumulator[-tail_window:]
+            for s in active_stops:
+                if not s:
+                    continue
+                pos = tail.rfind(s)
+                if pos != -1:
+                    gpos = len(text_accumulator) - len(tail) + pos
+                    final_piece = text_accumulator[emitted_len:gpos + len(s)]
+                    if final_piece:
+                        yield GenerationResult(
+                            text=final_piece,
+                            tokens=[],
+                            top_logprobs=[],
+                            stop_condition=None,
+                        )
                     stop_condition = GenerationStopCondition(
                         stop_reason="stop_string",
-                        stop_string=stop_string,
-                        stop_tokens=[model_kit.tokenize(stop_string)[-1]]  # Simplified
+                        stop_string=s,
+                        stop_tokens=[model_kit.tokenize(s)[-1]] if hasattr(model_kit, "tokenize") else [],
                     )
-                    yield GenerationResult(
-                        text=text_to_yield,
-                        tokens=[],  # Simplified
-                        top_logprobs=[],
-                        stop_condition=stop_condition
-                    )
+                    yield GenerationResult(text="", tokens=[], top_logprobs=[], stop_condition=stop_condition)
                     return
 
-        # Yield current text
-        yield GenerationResult(
-            text=chunk.text,
-            tokens=[],  # Simplified
-            top_logprobs=[],
-            stop_condition=stop_condition
-        )
+        # No stop yet: emit just the new delta
+        if delta:
+            emitted_len = len(text_accumulator)
+            yield GenerationResult(text=delta, tokens=[], top_logprobs=[], stop_condition=None)
 
 
 class AppleMLXProvider:
@@ -254,6 +398,11 @@ class AppleMLXProvider:
                         str(model_path_obj), trust_remote_code=True
                     ),
                 )
+                try:
+                    derived = _collect_stop_strings_from_fs(self._model_kit.tokenizer, self._model_kit.model_path)
+                    print(f"[MLX] Derived stop strings: {derived}")
+                except Exception:
+                    pass
 
                 # Load chat template if available
                 chat_template_path = model_path_obj / "chat_template.jinja"
@@ -791,8 +940,6 @@ class MLXServerClient:
 
         # Prepare request data
         final_top_k = top_k if top_k is not None else self._top_k_default
-        if final_top_k == 0:
-            final_top_k = None
 
         final_repetition = (
             repetition_penalty if repetition_penalty is not None else self._repetition_penalty_default
@@ -873,8 +1020,6 @@ class MLXServerClient:
         serialized_messages = self._normalize_messages(messages)
 
         final_top_k = top_k if top_k is not None else self._top_k_default
-        if final_top_k == 0:
-            final_top_k = None
 
         final_repetition = (
             repetition_penalty if repetition_penalty is not None else self._repetition_penalty_default
