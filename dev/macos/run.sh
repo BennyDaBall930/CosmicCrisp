@@ -120,8 +120,12 @@ echo ""
 SEARXNG_PID_FILE="${PROJECT_DIR}/tmp/searxng.pid"
 SEARXNG_TERM_ID_FILE="${PROJECT_DIR}/tmp/searxng.terminal.id"
 SEARXNG_PORT_DEFAULT=8888
+
+MLX_PID_FILE="${PROJECT_DIR}/tmp/mlx.pid"
+MLX_TERM_ID_FILE="${PROJECT_DIR}/tmp/mlx.terminal.id"
+
 mkdir -p "${PROJECT_DIR}/tmp"
-rm -f "$SEARXNG_PID_FILE" "$SEARXNG_TERM_ID_FILE"
+rm -f "$SEARXNG_PID_FILE" "$SEARXNG_TERM_ID_FILE" "$MLX_PID_FILE" "$MLX_TERM_ID_FILE"
 
 port_in_use() {
     local port=$1
@@ -136,13 +140,38 @@ find_free_port() {
             echo "$port"
             return 0
         fi
-    done
-    echo "$preferred"
-}
+        done
+        echo "$preferred"
+    }
+    
+    force_stop_process_on_port() {
+        local port=$1
+        echo -e "${YELLOW}Ensuring port $port is free...${NC}"
+        for i in {1..5}; do
+            # Use lsof -ti to get the PID directly for a more reliable kill
+            local pid=$(lsof -ti :"$port" || true)
+            if [ -n "$pid" ]; then
+                echo -e "${YELLOW}Port $port is in use by PID $pid. Terminating (attempt $i)...${NC}"
+                kill -9 "$pid" 2>/dev/null || true
+                sleep 0.5
+            else
+                echo -e "${GREEN}Port $port is free.${NC}"
+                return 0
+            fi
+        done
 
-start_chrome_cdp() {
-    # Launch user Chrome with remote debugging if not already running
-    local port=${A0_CHROME_DEBUG_PORT:-9222}
+        local pid=$(lsof -ti :"$port" || true)
+        if [ -n "$pid" ]; then
+            echo -e "${RED}Failed to free port $port (still used by PID $pid).${NC}"
+            return 1
+        fi
+        echo -e "${GREEN}Port $port is free.${NC}"
+        return 0
+    }
+    
+    start_chrome_cdp() {
+        # Launch user Chrome with remote debugging if not already running
+        local port=${A0_CHROME_DEBUG_PORT:-9222}
     local profile_dir="${PROJECT_DIR}/tmp/chrome-debug-profile"
     mkdir -p "$profile_dir"
 
@@ -288,6 +317,111 @@ APPLESCRIPT
     fi
 }
 
+start_mlx_server_terminal() {
+    echo -e "${GREEN}Starting MLX Server in a new Terminal tab...${NC}"
+
+    # Check if MLX server is enabled in settings
+    SETTINGS_PATH="${PROJECT_DIR}/tmp/settings.json"
+    if [ ! -f "$SETTINGS_PATH" ]; then
+        echo -e "${YELLOW}Settings file not found; skipping MLX server launch.${NC}"
+        return 0
+    fi
+
+    # Check if MLX server is enabled
+    MLX_ENABLED=$(python3 - <<PY
+import json, sys
+try:
+    with open('$SETTINGS_PATH') as f:
+        settings = json.load(f)
+    if settings.get('mlx_server_enabled', False):
+        print('enabled')
+    else:
+        print('disabled')
+except Exception:
+    print('disabled', file=sys.stderr)
+PY
+)
+    if [ "$MLX_ENABLED" != "enabled" ]; then
+        echo -e "${YELLOW}MLX server is disabled in settings; skipping launch.${NC}"
+        return 0
+    fi
+
+    # Get MLX port from default settings
+    MLX_PORT=$(python3 -c "from python.helpers.settings import get_default_settings; print(get_default_settings()['mlx_server_port'])" 2>/dev/null || echo "8082")
+    echo -e "${GREEN}MLX server port set to: ${MLX_PORT}${NC}"
+
+    # Force stop any existing process on the MLX port before starting
+    force_stop_process_on_port "$MLX_PORT" || return 1
+
+    # Check if port is already in use
+    if port_in_use "$MLX_PORT"; then
+        echo -e "${YELLOW}MLX server port ${MLX_PORT} is still in use after cleanup; skipping launch.${NC}"
+        return 0
+    fi
+
+    # If a previous MLX server from this project is running, stop it cleanly
+    if [ -f "$MLX_PID_FILE" ]; then
+        oldpid=$(cat "$MLX_PID_FILE" 2>/dev/null || true)
+        if [ -n "$oldpid" ] && ps -p "$oldpid" >/dev/null 2>&1; then
+            echo -e "${YELLOW}Stopping previous MLX server (PID $oldpid)...${NC}"
+            kill "$oldpid" 2>/dev/null || true
+            wait "$oldpid" 2>/dev/null || true
+        fi
+        rm -f "$MLX_PID_FILE"
+    fi
+
+    export MLX_PORT
+
+    # Use osascript to open a new tab in the current Terminal window and run MLX server.
+    # We write the PID via exec. Fallback to in-process background if AppleScript fails.
+    if command -v osascript >/dev/null 2>&1; then
+        # Write a small runner script to avoid quoting issues with spaces
+        RUNNER_SCRIPT="${PROJECT_DIR}/tmp/run_mlx_server.sh"
+        cat > "$RUNNER_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -e
+cd "__PROJECT_DIR__"
+source venv/bin/activate
+export PYTHONPATH="__PROJECT_DIR__":$PYTHONPATH
+SETTINGS_PATH="__PROJECT_DIR__"/tmp/settings.json
+MLX_PORT=__MLX_PORT__
+
+if curl -sS -o /dev/null -m 1 "http://127.0.0.1:${MLX_PORT}/healthz"; then
+  echo "MLX server already running on port ${MLX_PORT}. Exiting runner."
+  exit 0
+fi
+printf '\e]0;MLX Server\a'
+echo $$ > "__PROJECT_DIR__"/tmp/mlx.pid
+exec "__PROJECT_DIR__"/venv/bin/python3 -u -m python.models.apple_mlx_provider "$SETTINGS_PATH" >> "__PROJECT_DIR__"/logs/mlx_server.log 2>&1
+EOF
+        # Replace placeholders with actual values (portable sed on macOS)
+        sed -i '' -e "s|__PROJECT_DIR__|${PROJECT_DIR//|/\|}|g" "$RUNNER_SCRIPT"
+        sed -i '' -e "s|__MLX_PORT__|${MLX_PORT}|g" "$RUNNER_SCRIPT"
+        chmod +x "$RUNNER_SCRIPT"
+
+        # Launch the runner script in a new tab
+        if TERM_REF=$(osascript <<APPLESCRIPT
+tell application "Terminal"
+    activate
+    set newTab to do script ("bash " & quoted form of POSIX path of "${RUNNER_SCRIPT}")
+    delay 0.3
+    set winId to id of front window
+    return (winId as string)
+end tell
+APPLESCRIPT
+        ); then
+            echo "$TERM_REF" > "$MLX_TERM_ID_FILE"
+        else
+            echo -e "${RED}AppleScript failed; could not launch MLX server tab.${NC}"
+            echo -e "${YELLOW}Fallback: starting MLX server in this terminal...${NC}"
+            PYTHONPATH="${PROJECT_DIR}:$PYTHONPATH" python3 -m python.models.apple_mlx_provider "$SETTINGS_PATH" & echo $! > "$MLX_PID_FILE"
+        fi
+    else
+        echo -e "${YELLOW}osascript not found; starting MLX server in this terminal...${NC}"
+        PYTHONPATH="${PROJECT_DIR}:$PYTHONPATH" python3 -m python.models.apple_mlx_provider "$SETTINGS_PATH" & echo $! > "$MLX_PID_FILE"
+    fi
+}
+
 start_searxng_background() {
     echo -e "${GREEN}Starting SearXNG in background (no Terminal)...${NC}"
     export SEARXNG_SETTINGS_PATH="${PROJECT_DIR}/searxng/settings.yml"
@@ -412,6 +546,34 @@ APPLESCRIPT
     fi
 }
 
+close_mlx_server_terminal() {
+    if [ -f "$MLX_TERM_ID_FILE" ] && command -v osascript >/dev/null 2>&1; then
+        TERM_REF=$(cat "$MLX_TERM_ID_FILE" 2>/dev/null || true)
+        if [ -n "$TERM_REF" ]; then
+            if [[ "$TERM_REF" == *":"* ]]; then
+                TERM_WIN_ID="${TERM_REF%%:*}"
+                TERM_TAB_INDEX="${TERM_REF##*:}"
+                osascript <<APPLESCRIPT >/dev/null 2>&1 || true
+tell application "Terminal"
+    try
+        close tab ${TERM_TAB_INDEX} of window id ${TERM_WIN_ID}
+    end try
+end tell
+APPLESCRIPT
+            else
+                # Backward compatibility: stored only window id; close the window
+                osascript <<APPLESCRIPT >/dev/null 2>&1 || true
+tell application "Terminal"
+    try
+        close window id ${TERM_REF}
+    end try
+end tell
+APPLESCRIPT
+            fi
+        fi
+    fi
+}
+
 wait_for_searxng() {
     local port=${SEARXNG_PORT:-$SEARXNG_PORT_DEFAULT}
     echo -e "${GREEN}Waiting for SearXNG to become ready on 127.0.0.1:${port}...${NC}"
@@ -430,6 +592,34 @@ wait_for_searxng() {
         return 0
     else
         echo -e "${YELLOW}SearXNG did not respond in time; continuing anyway.${NC}"
+        return 1
+    fi
+}
+
+wait_for_mlx_server() {
+    local port=${MLX_PORT:-$(python3 -c "from python.helpers.settings import get_default_settings; print(get_default_settings()['mlx_server_port'])" 2>/dev/null || echo "8082")}
+    echo -e "${GREEN}Waiting for MLX server to become ready on 127.0.0.1:${port}...${NC}"
+    local attempts=300  # MLX models can take longer to load
+    local ok=0
+    local required_successes=3
+    local successes=0
+    for i in $(seq 1 ${attempts}); do
+        if curl -sS -o /dev/null -m 1 "http://127.0.0.1:${port}/healthz"; then
+            successes=$((successes + 1))
+            if [ "$successes" -ge "$required_successes" ]; then
+                ok=1
+                break
+            fi
+        else
+            successes=0
+        fi
+        sleep 0.5
+    done
+    if [ "$ok" = "1" ]; then
+        echo -e "${GREEN}MLX server is up.${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}MLX server did not respond in time; continuing anyway.${NC}"
         return 1
     fi
 }
@@ -461,10 +651,15 @@ wait_for_ui() {
     fi
 }
 
-# Orchestration: SearXNG -> UI -> Agent Terminal
+# Orchestration: SearXNG -> MLX Server -> UI -> Agent Terminal
 start_searxng_terminal
 if ! wait_for_searxng; then
   echo -e "${RED}SearXNG did not become ready in time. Check logs at ${PROJECT_DIR}/logs/searxng.log${NC}"
+fi
+
+start_mlx_server_terminal
+if ! wait_for_mlx_server; then
+  echo -e "${RED}MLX server did not become ready in time. Check logs at ${PROJECT_DIR}/logs/mlx_server.log${NC}"
 fi
 # Prefer headless Playwright — do NOT attach to user's Chrome
 # Set A0_ENABLE_CDP=1 if you explicitly want to attach to a running Chrome.
@@ -494,7 +689,16 @@ cleanup() {
         fi
         rm -f "$SEARXNG_PID_FILE"
     fi
+    if [ -f "$MLX_PID_FILE" ]; then
+        MLX_PID=$(cat "$MLX_PID_FILE" 2>/dev/null || true)
+        if [ -n "$MLX_PID" ]; then
+            kill "$MLX_PID" 2>/dev/null || true
+            wait "$MLX_PID" 2>/dev/null || true
+        fi
+        rm -f "$MLX_PID_FILE"
+    fi
     close_searxng_terminal
+    close_mlx_server_terminal
     close_agent_terminal
     # Close UI tab/window if we opened one
     if [ -f "${PROJECT_DIR}/tmp/ui.terminal.id" ] && command -v osascript >/dev/null 2>&1; then
@@ -523,6 +727,7 @@ APPLESCRIPT
         rm -f "${PROJECT_DIR}/tmp/ui.terminal.id"
     fi
     rm -f "$SEARXNG_TERM_ID_FILE"
+    rm -f "$MLX_TERM_ID_FILE"
     rm -f "$AGENT_TERM_ID_FILE"
     if [ -f "${PROJECT_DIR}/tmp/chrome_debug.pid" ]; then
         CH_PID=$(cat "${PROJECT_DIR}/tmp/chrome_debug.pid" 2>/dev/null || true)
@@ -532,9 +737,11 @@ APPLESCRIPT
         fi
         rm -f "${PROJECT_DIR}/tmp/chrome_debug.pid"
     fi
+    # Force kill any remaining python processes from this project
+    pkill -f "python -m python.models.apple_mlx_provider" || true
     exit 0
 }
-trap cleanup INT TERM
+trap cleanup INT TERM EXIT
 
 # Start the UI server in this window and wait for it
 start_ui_server

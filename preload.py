@@ -47,22 +47,29 @@ async def preload():
 
         async def preload_mlx():
             try:
-                mlx_settings = current.get("apple_mlx", {})
-                if not mlx_settings.get("enabled", False):
+                # Check if MLX server is enabled in settings
+                if not current.get("mlx_server_enabled", False):
                     return
-                
-                PrintStyle().print("Preloading Apple MLX model...")
-                # Get the provider instance, which will cache it
-                provider = models.get_chat_model("apple_mlx", "")
-                # Aload the model to warm it up
-                if provider and hasattr(provider, 'aload'):
-                    await provider.aload()
-                    PrintStyle().print("Apple MLX model preloaded successfully.")
+
+                PrintStyle().print("Checking MLX server status...")
+
+                # Import MLXServerManager here to avoid circular imports
+                from python.helpers.mlx_server import MLXServerManager
+
+                # Get server manager instance and check status
+                manager = MLXServerManager.get_instance()
+                status = manager.get_status()
+
+                if status["status"] == "running":
+                    PrintStyle().print("MLX server is running and healthy.")
                 else:
-                    PrintStyle().error("Could not get a valid MLX provider to preload.")
+                    PrintStyle().error(f"MLX server is not running. Current status: {status['status']}")
+                    PrintStyle().error("Please ensure the MLX server is started before using MLX models.")
 
             except Exception as e:
-                PrintStyle().error(f"Error in preload_mlx: {e}")
+                PrintStyle().error(f"Error checking MLX server status: {e}")
+                import traceback
+                PrintStyle().error(f"Traceback: {traceback.format_exc()}")
 
         # async tasks to preload
         tasks = [

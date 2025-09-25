@@ -44,3 +44,7 @@ valkey:
 #   - name: mediathekviewweb
 #     categories: TV
 #     disabled: false
+
+engines:
+  - name: wikidata
+    disabled: true

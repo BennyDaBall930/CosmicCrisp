@@ -103,6 +103,8 @@ class Settings(TypedDict):
 
     shell_interface: Literal['local','ssh']
 
+    apple_mlx_model_path: str
+
     stt_model_size: str
     stt_language: str
     stt_silence_threshold: float
@@ -118,7 +120,11 @@ class Settings(TypedDict):
     mcp_server_token: str
 
     a2a_server_enabled: bool
-    
+
+    mlx_server_enabled: bool
+    mlx_server_port: int
+    mlx_server_auto_start: bool
+
 
 
 class PartialSettings(Settings, total=False):
@@ -300,15 +306,17 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "options": cast(list[FieldOption], get_providers("chat")),
         }
     )
+
     util_model_fields.append(
         {
             "id": "util_model_name",
             "title": "Utility model name",
-            "description": "Exact name of model from selected provider",
+            "description": "Exact name of utility model from selected provider",
             "type": "text",
             "value": settings["util_model_name"],
         }
     )
+
 
     util_model_fields.append(
         {
@@ -1197,6 +1205,86 @@ def convert_out(settings: Settings) -> SettingsOutput:
         "tab": "mcp",
     }
 
+    # -------- MLX Server Section --------
+    mlx_server_fields: list[SettingsField] = []
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_enabled",
+            "title": "Enable MLX FastAPI Server",
+            "description": "Expose Apple MLX models as a FastAPI server. This allows external applications to use MLX models via REST API.",
+            "type": "switch",
+            "value": settings["mlx_server_enabled"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_port",
+            "title": "MLX Server Port",
+            "description": "Port number for the MLX FastAPI server.",
+            "type": "number",
+            "value": settings["mlx_server_port"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "apple_mlx_model_path",
+            "title": "MLX Model Path",
+            "description": "Path to the local MLX model directory.",
+            "type": "text",
+            "value": settings["apple_mlx_model_path"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_auto_start",
+            "title": "Auto-start MLX Server",
+            "description": "Automatically start/stop the MLX server when settings change. When disabled, the server can only be controlled manually via the buttons.",
+            "type": "switch",
+            "value": settings["mlx_server_auto_start"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_start",
+            "title": "Start MLX Server",
+            "description": "Start the MLX FastAPI server subprocess.",
+            "type": "button",
+            "value": "Start",
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_stop",
+            "title": "Stop MLX Server",
+            "description": "Stop the MLX FastAPI server subprocess.",
+            "type": "button",
+            "value": "Stop",
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_status",
+            "title": "Check MLX Server Status",
+            "description": "Check the current status of the MLX server.",
+            "type": "button",
+            "value": "Status",
+        }
+    )
+
+    mlx_server_section: SettingsSection = {
+        "id": "mlx_server",
+        "title": "MLX FastAPI Server",
+        "description": "Apple Zero can serve MLX models via a FastAPI server for external API access.",
+        "fields": mlx_server_fields,
+        "tab": "mcp",
+    }
 
     # External API section
     external_api_fields: list[SettingsField] = []
@@ -1269,6 +1357,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
             mcp_client_section,
             mcp_server_section,
             a2a_section,
+            mlx_server_section,
             external_api_section,
             backup_section,
             dev_section,
@@ -1572,6 +1661,7 @@ def get_default_settings() -> Settings:
         rfc_port_http=55080,
         rfc_port_ssh=55022,
         shell_interface="local" if runtime.is_dockerized() else "ssh",
+        apple_mlx_model_path="",
         stt_model_size="base",
         stt_language="en",
         stt_silence_threshold=0.3,
@@ -1597,6 +1687,9 @@ def get_default_settings() -> Settings:
         mcp_server_enabled=False,
         mcp_server_token=create_auth_token(),
         a2a_server_enabled=False,
+        mlx_server_enabled=False,
+        mlx_server_port=8082,
+        mlx_server_auto_start=True,
     )
 
 
@@ -1702,9 +1795,46 @@ def _apply_settings(previous: Settings | None):
 
                 DynamicA2AProxy.get_instance().reconfigure(token=token)
 
-            task4 = defer.DeferredTask().start_task(
-                update_a2a_token, current_token
+        # manage MLX server based on settings changes (only if auto-start is enabled)
+        if _settings["mlx_server_auto_start"] and (not previous or _settings["mlx_server_enabled"] != previous["mlx_server_enabled"] or _settings["mlx_server_port"] != previous["mlx_server_port"]):
+            async def manage_mlx_server():
+                from python.helpers.mlx_server import MLXServerManager
+                from agent import AgentContext
+
+                manager = MLXServerManager.get_instance()
+                if _settings["mlx_server_enabled"]:
+                    try:
+                        result = manager.start_server(port=_settings["mlx_server_port"])
+                        AgentContext.log_to_all(
+                            type="info",
+                            content=f"MLX server started on port {_settings['mlx_server_port']}",
+                            temp=False,
+                        )
+                    except Exception as e:
+                        AgentContext.log_to_all(
+                            type="error",
+                            content=f"Failed to start MLX server: {e}",
+                            temp=False,
+                        )
+                else:
+                    try:
+                        result = manager.stop_server()
+                        AgentContext.log_to_all(
+                            type="info",
+                            content="MLX server stopped",
+                            temp=False,
+                        )
+                    except Exception as e:
+                        AgentContext.log_to_all(
+                            type="error",
+                            content=f"Failed to stop MLX server: {e}",
+                            temp=False,
+                        )
+
+            task5 = defer.DeferredTask().start_task(
+                manage_mlx_server
             )  # TODO overkill, replace with background task
+
 
 
 def _env_to_dict(data: str):
@@ -1723,10 +1853,13 @@ def _env_to_dict(data: str):
 def _dict_to_env(data_dict):
     lines = []
     for key, value in data_dict.items():
-        if "\n" in value:
-            value = f"'{value}'"
-        elif " " in value or value == "" or any(c in value for c in "\"'"):
-            value = f'"{value}"'
+        value_str = str(value)
+        if "\n" in value_str:
+            value = f"'{value_str}'"
+        elif " " in value_str or value_str == "" or any(c in value_str for c in "\"'"):
+            value = f'"{value_str}"'
+        else:
+            value = value_str
         lines.append(f"{key}={value}")
     return "\n".join(lines)
 

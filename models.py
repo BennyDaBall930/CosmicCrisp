@@ -3,6 +3,9 @@ from enum import Enum
 import logging
 import os
 import sys
+import json
+import hashlib
+from pathlib import Path
 from typing import (
     Any,
     Awaitable,
@@ -24,6 +27,8 @@ from python.helpers.providers import get_provider_config
 from python.helpers.rate_limiter import RateLimiter
 from python.helpers.tokens import approximate_tokens
 from python.helpers.defer import EventLoopThread
+from python.helpers.mlx_server import MLXServerManager
+from python.models.apple_mlx_provider import MLXServerClient
 from pydantic import ConfigDict
 
 from langchain_core.language_models.chat_models import SimpleChatModel
@@ -40,6 +45,88 @@ from langchain_core.messages import (
 )
 from langchain.embeddings.base import Embeddings
 from sentence_transformers import SentenceTransformer
+
+
+class MLXCacheManager:
+    """
+    Persistent cache manager for MLX provider that survives module reloads.
+    Uses file-based storage to persist provider state across Flask/Werkzeug reloads.
+    """
+
+    def __init__(self):
+        # Create cache directory in tmp folder
+        self.cache_dir = Path(__file__).parent / "tmp" / "mlx_cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_file = self.cache_dir / "mlx_provider_cache.json"
+
+    def _get_cache_key(self, model_path: str) -> str:
+        """Generate a cache key based on model path"""
+        return hashlib.md5(model_path.encode()).hexdigest()
+
+    def save_provider_state(self, model_path: str, provider_state: dict):
+        """Save provider state to persistent cache"""
+        try:
+            cache_key = self._get_cache_key(model_path)
+            cache_data = {
+                "model_path": model_path,
+                "cache_key": cache_key,
+                "provider_state": provider_state,
+                "timestamp": os.path.getmtime(__file__) if os.path.exists(__file__) else 0,
+            }
+
+            with open(self.cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+
+            print(f"[MLX Cache] Saved provider state for model: {model_path}")
+        except Exception as e:
+            print(f"[MLX Cache] Error saving cache: {e}")
+
+    def load_provider_state(self, model_path: str) -> Optional[dict]:
+        """Load provider state from persistent cache"""
+        try:
+            if not self.cache_file.exists():
+                return None
+
+            with open(self.cache_file, 'r') as f:
+                cache_data = json.load(f)
+
+            # Validate cache key matches current model path
+            expected_key = self._get_cache_key(model_path)
+            if cache_data.get("cache_key") != expected_key:
+                print(f"[MLX Cache] Cache key mismatch for {model_path}, ignoring cache")
+                return None
+
+            # Check if models.py has been modified since cache was created
+            current_mtime = os.path.getmtime(__file__) if os.path.exists(__file__) else 0
+            cache_mtime = cache_data.get("timestamp", 0)
+            if current_mtime > cache_mtime:
+                print(f"[MLX Cache] models.py modified since cache creation, ignoring cache")
+                return None
+
+            print(f"[MLX Cache] Loaded provider state for model: {model_path}")
+            return cache_data.get("provider_state")
+
+        except Exception as e:
+            print(f"[MLX Cache] Error loading cache: {e}")
+            return None
+
+    def clear_cache(self):
+        """Clear all cached provider state"""
+        try:
+            if self.cache_file.exists():
+                self.cache_file.unlink()
+                print("[MLX Cache] Cache cleared")
+        except Exception as e:
+            print(f"[MLX Cache] Error clearing cache: {e}")
+
+    def is_cache_valid(self, model_path: str) -> bool:
+        """Check if cache exists and is valid for the given model path"""
+        state = self.load_provider_state(model_path)
+        return state is not None
+
+
+# Global cache manager instance
+_mlx_cache_manager = MLXCacheManager()
 
 
 # disable extra logging, must be done repeatedly, otherwise browser-use will turn it back on for some reason
@@ -93,8 +180,7 @@ rate_limiters: dict[str, RateLimiter] = {}
 api_keys_round_robin: dict[str, int] = {}
 
 
-# Global state for MLX provider switching
-_current_mlx_provider = None
+# Global state for MLX server switching
 _last_provider = None
 
 def get_api_key(service: str) -> str:
@@ -577,87 +663,41 @@ def _merge_provider_defaults(
 
 
 def get_chat_model(provider: str, name: str, model_config: Optional[ModelConfig] = None, **kwargs: Any) -> LiteLLMChatWrapper:
-    global _last_provider, _current_mlx_provider
+    global _last_provider
     orig = provider.lower()
 
-    # Provider switching hook: unload MLX model when switching away from apple_mlx
-    if _last_provider == "apple_mlx" and orig != "apple_mlx" and _current_mlx_provider:
-        import asyncio
-        # Create task to unload asynchronously
-        asyncio.create_task(_current_mlx_provider.aunload())
-        _current_mlx_provider = None
+    # Provider switching hook: stop MLX server when switching away from apple_mlx
+    if _last_provider == "apple_mlx" and orig != "apple_mlx":
+        print(f"[MLX Server] Stopping MLX server due to provider switch from {_last_provider} to {orig}")
+        try:
+            manager = MLXServerManager.get_instance()
+            result = manager.stop_server()
+            if result.get("success"):
+                print("[MLX Server] Server stopped successfully")
+            else:
+                print(f"[MLX Server] Failed to stop server: {result.get('message')}")
+        except Exception as e:
+            print(f"[MLX Server] Error stopping server: {e}")
 
     _last_provider = orig
 
     if orig == "apple_mlx":
-        # Handle Apple MLX provider specially - direct MLX integration
-        # Add absolute path to python package for reliable imports
-        import os
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(app_dir)
-        
-        # Load apple_mlx settings from tmp/settings.json
-        import json
-        # Correct settings path relative to the project root
-        settings_path = os.path.join(project_root, "tmp", "settings.json")
-        if not os.path.exists(settings_path):
-             # Fallback for running from within CosmicCrisp dir
-            settings_path = os.path.join(os.path.dirname(project_root), "tmp", "settings.json")
+        # Handle Apple MLX provider via server client
+        print("[MLX Server] Checking MLX server status...")
 
-        with open(settings_path, 'r') as f:
-            settings = json.load(f)
-        apple_mlx_settings = settings.get("apple_mlx", {})
-        
-        # Correct python_path to be inside the app directory
-        python_path = os.path.join(app_dir, "python")
-        if python_path not in sys.path:
-            sys.path.insert(0, python_path)
+        manager = MLXServerManager.get_instance()
+        status = manager.get_status()
 
-        import importlib.util
-        provider_path = os.path.join(python_path, "models", "apple_mlx_provider.py")
-        spec = importlib.util.spec_from_file_location("apple_mlx_provider", provider_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load MLX provider from {provider_path}")
-        apple_mlx_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(apple_mlx_module)
-        AppleMLXProvider = apple_mlx_module.AppleMLXProvider
+        if status["status"] != "running":
+            print("[MLX Server] Server not running, starting it...")
+            result = manager.start_server()
+            if not result.get("success"):
+                raise Exception(f"Failed to start MLX server: {result.get('message')}")
+            print("[MLX Server] Server started successfully")
 
-        # Cache and reuse the provider instance
-        model_path = apple_mlx_settings.get("model_path", "")
-        if _current_mlx_provider and getattr(_current_mlx_provider, '_model_path', None) == model_path:
-            # Return cached provider if model path is the same
-            return _current_mlx_provider
-
-        # If provider exists but model path is different, unload the old one first
-        if _current_mlx_provider:
-            import asyncio
-            # Ensure the unload is awaited to prevent race conditions
-            try:
-                loop = asyncio.get_running_loop()
-                if loop.is_running():
-                    loop.create_task(_current_mlx_provider.aunload())
-                else:
-                    asyncio.run(_current_mlx_provider.aunload())
-            except RuntimeError:
-                 asyncio.run(_current_mlx_provider.aunload())
-
-
-        # Create and cache a new provider instance
-        _current_mlx_provider = AppleMLXProvider(
-            model_path=model_path,
-            max_kv_size=apple_mlx_settings.get("max_kv_size", 2048),
-            temperature=apple_mlx_settings.get("temperature", 0.7),
-            top_p=apple_mlx_settings.get("top_p", 0.8),
-            top_k=apple_mlx_settings.get("top_k"),
-            min_p=apple_mlx_settings.get("min_p"),
-            quantization=apple_mlx_settings.get("quantization"),
-            wired_limit_mb=apple_mlx_settings.get("wired_limit_mb"),
-            cache_limit_mb=apple_mlx_settings.get("cache_limit_mb")
-        )
-        
-        if hasattr(_current_mlx_provider, "unified_call"):
-            _current_mlx_provider.system_message = kwargs.get("system_message", "")
-        return _current_mlx_provider  # type: ignore
+        # Create MLXServerClient
+        client = MLXServerClient(system_message=kwargs.get("system_message", ""))
+        return client
 
     provider_name, kwargs = _merge_provider_defaults("chat", orig, kwargs)
     return _get_litellm_chat(LiteLLMChatWrapper, name, provider_name, model_config, **kwargs)

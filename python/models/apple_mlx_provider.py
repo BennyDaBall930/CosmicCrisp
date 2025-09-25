@@ -9,8 +9,17 @@ for proper MLX model handling, tokenization, and generation.
 
 from __future__ import annotations
 from typing import AsyncIterator, Optional, List, Dict, Any, Iterator, Callable, NamedTuple
-import asyncio, gc, uvicorn, json, threading
+import asyncio, gc, json, threading
 from pathlib import Path as FilePath
+from contextlib import asynccontextmanager
+import uvicorn # Explicitly import uvicorn for type checking
+
+# JSON schema validation
+try:
+    import jsonschema
+    HAS_JSONSCHEMA = True
+except ImportError:
+    HAS_JSONSCHEMA = False
 
 # MLX and core dependencies
 import mlx.core as mx
@@ -24,6 +33,9 @@ from transformers import AutoTokenizer, AutoProcessor
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+# HTTP client for MLX server
+import httpx
 
 
 # ============================================================================
@@ -178,16 +190,17 @@ class AppleMLXProvider:
         system_message: str = "",
     ):
         self._model_path = model_path
-        print(f"AppleMLXProvider.__init__: model_path='{model_path}', max_kv_size={max_kv_size}, temperature={temperature}, top_p={top_p}")
-        self._max_kv_size = max_kv_size
-        self._temperature = temperature
-        self._top_p = top_p
-        self._top_k = top_k
-        self._min_p = min_p
+        # Convert string values to appropriate types to handle settings that may contain strings
+        self._max_kv_size = int(max_kv_size) if max_kv_size is not None else 2048
+        self._temperature = float(temperature) if temperature is not None else 0.7
+        self._top_p = float(top_p) if top_p is not None else 0.95
+        self._top_k = int(top_k) if top_k is not None else None
+        self._min_p = float(min_p) if min_p is not None else None
         self._quantization = quantization
-        self._wired_limit_mb = wired_limit_mb
-        self._cache_limit_mb = cache_limit_mb
+        self._wired_limit_mb = int(wired_limit_mb) if wired_limit_mb is not None else None
+        self._cache_limit_mb = int(cache_limit_mb) if cache_limit_mb is not None else None
         self.system_message = system_message
+        print(f"AppleMLXProvider.__init__: model_path='{model_path}', max_kv_size={self._max_kv_size}, temperature={self._temperature}, top_p={self._top_p}")
 
         self._model_kit = None
         # Detect thinking models: thinking, yoyo, ThinkCode, etc. (but exclude coder models)
@@ -240,8 +253,9 @@ class AppleMLXProvider:
 
     async def aunload(self) -> None:
         async with self._lock:
-            self._model = None
-            self._tokenizer = None
+            self._model_kit = None
+            self._hf_tokenizer = None
+            self._chat_template = None
             gc.collect()
             mx.clear_cache()  # free MLX buffer cache
 
@@ -253,6 +267,7 @@ class AppleMLXProvider:
         top_p: Optional[float] = None,
         stop: Optional[List[str]] = None,
         thinking: bool = False,
+        response_format: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         # Ensure model is loaded
@@ -264,6 +279,9 @@ class AppleMLXProvider:
         if self.system_message and not any(msg.get("role") == "system" for msg in processed_messages):
             processed_messages.insert(0, {"role": "system", "content": self.system_message})
 
+        # Prepare messages for structured output if response_format is specified
+        processed_messages = self._prepare_structured_output_prompt(processed_messages, response_format)
+
         # Apply chat template using transformers AutoTokenizer (like LM Studio does)
         if self._hf_tokenizer and hasattr(self._hf_tokenizer, 'apply_chat_template'):
             chat_template_kwargs = {
@@ -271,15 +289,15 @@ class AppleMLXProvider:
                 "add_generation_prompt": True
             }
 
-            # Enable thinking mode if this is a thinking model or thinking is explicitly requested
-            if self._is_thinking_model or thinking:
+            # Enable thinking mode if explicitly requested
+            if thinking:
                 chat_template_kwargs["thinking"] = True
 
             prompt = self._hf_tokenizer.apply_chat_template(processed_messages, **chat_template_kwargs)
-            print(f"Applied chat template successfully, thinking={self._is_thinking_model or thinking}")
+            print(f"Applied chat template successfully, thinking={thinking}")
         else:
             # Fallback for models without chat template
-            prompt = self._build_simple_chat_prompt(processed_messages, self._is_thinking_model or thinking)
+            prompt = self._build_simple_chat_prompt(processed_messages, thinking)
 
         # Convert prompt to tokens using the model kit tokenizer
         prompt_tokens = self._model_kit.tokenize(prompt)
@@ -353,12 +371,96 @@ class AppleMLXProvider:
         # No special thinking handling needed
         return new_text
 
+    def _prepare_structured_output_prompt(self, messages: List[Dict[str, str]], response_format: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Prepare messages for structured output by adding system instructions."""
+        if not response_format:
+            return messages
+
+        response_type = response_format.get("type")
+
+        if response_type == "json_object":
+            # Add JSON instruction to the last user message or as a system message
+            json_instruction = "You must respond with valid JSON. Do not include any other text, explanations, or formatting outside of the JSON object."
+
+            # If there's a schema, include it in the instruction
+            if "json_schema" in response_format:
+                schema = response_format["json_schema"]
+                schema_str = json.dumps(schema, indent=2)
+                json_instruction += f"\n\nFollow this JSON schema:\n{schema_str}"
+
+            # Add as a system message if none exists, otherwise prepend to first user message
+            modified_messages = messages.copy()
+            has_system = any(msg.get("role") == "system" for msg in modified_messages)
+
+            if has_system:
+                # Prepend to the first user message
+                for i, msg in enumerate(modified_messages):
+                    if msg.get("role") == "user":
+                        msg["content"] = f"{json_instruction}\n\n{msg['content']}"
+                        break
+            else:
+                # Add as system message
+                modified_messages.insert(0, {"role": "system", "content": json_instruction})
+
+            return modified_messages
+
+        return messages
+
+    def _validate_structured_output(self, response: str, response_format: Optional[Dict[str, Any]]) -> str:
+        """Validate and clean structured output response."""
+        if not response_format:
+            return response
+
+        response_type = response_format.get("type")
+
+        if response_type == "json_object":
+            # Try to clean and validate JSON
+            try:
+                # Strip any leading/trailing whitespace and potential markdown formatting
+                cleaned_response = response.strip()
+
+                # Remove potential markdown code block formatting
+                if cleaned_response.startswith("```json"):
+                    cleaned_response = cleaned_response[7:]
+                if cleaned_response.startswith("```"):
+                    cleaned_response = cleaned_response[3:]
+                if cleaned_response.endswith("```"):
+                    cleaned_response = cleaned_response[:-3]
+
+                cleaned_response = cleaned_response.strip()
+
+                # Parse JSON to validate
+                parsed_json = json.loads(cleaned_response)
+
+                # If schema is provided, validate against it
+                if "json_schema" in response_format and HAS_JSONSCHEMA:
+                    schema = response_format["json_schema"]
+                    jsonschema.validate(instance=parsed_json, schema=schema)
+                elif "json_schema" in response_format and not HAS_JSONSCHEMA:
+                    print("Warning: jsonschema library not available, skipping schema validation")
+
+                # Return the cleaned JSON string
+                return json.dumps(parsed_json)
+
+            except (json.JSONDecodeError, jsonschema.ValidationError) as e:
+                print(f"Structured output validation failed: {e}")
+                # Return the original response if validation fails
+                return response
+
+        return response
+
     # Optional: single-shot convenience mirroring ChatWrapper
-    async def acomplete(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    async def acomplete(self, messages: List[Dict[str, str]], response_format: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
         out = []
-        async for t in self.astream(messages, **kwargs):
+        async for t in self.astream(messages, response_format=response_format, **kwargs):
             out.append(t)
-        return "".join(out)
+        full_response = "".join(out)
+
+        # Validate and clean structured output if response_format is specified
+        if response_format:
+            full_response = self._validate_structured_output(full_response, response_format)
+
+        return full_response
 
     async def unified_call(
         self,
@@ -369,6 +471,7 @@ class AppleMLXProvider:
         reasoning_callback=None,
         tokens_callback=None,
         rate_limiter_callback=None,
+        response_format: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> tuple[str, str]:
         # Build messages list if not provided
@@ -384,7 +487,7 @@ class AppleMLXProvider:
 
         # Stream the response and collect it
         response = ""
-        async for chunk in self.astream(messages, **kwargs):
+        async for chunk in self.astream(messages, response_format=response_format, **kwargs):
             response += chunk
             if response_callback:
                 await response_callback(chunk, response)
@@ -419,11 +522,217 @@ class AppleMLXProvider:
         return "\n\n".join(prompt_parts)
 
 
+class MLXServerClient:
+    """
+    HTTP client for connecting to the MLX FastAPI server.
+    Provides the same interface as AppleMLXProvider but uses HTTP requests.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8082",
+        timeout: float = 300.0,
+        system_message: str = "",
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.system_message = system_message
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def __aenter__(self):
+        await self._ensure_client()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._close_client()
+
+    async def _ensure_client(self) -> None:
+        """Ensure HTTP client is initialized."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers={"Content-Type": "application/json"}
+            )
+
+    async def _close_client(self) -> None:
+        """Close HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    async def astream(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 512,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        stop: Optional[List[str]] = None,
+        thinking: bool = False,
+        response_format: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Stream response from MLX server using SSE."""
+        await self._ensure_client()
+
+        # Prepare request data
+        request_data = {
+            "messages": messages,
+            "model": "apple-mlx",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stream": True,
+            "stop": stop,
+            "response_format": response_format
+        }
+
+        # Add system message if not already present
+        if self.system_message and not any(msg.get("role") == "system" for msg in messages):
+            request_data["messages"].insert(0, {"role": "system", "content": self.system_message})
+
+        try:
+            async with self._client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json=request_data
+            ) as response:
+                response.raise_for_status()
+
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]  # Remove "data: " prefix
+                        if data == "[DONE]":
+                            break
+
+                        try:
+                            chunk_data = json.loads(data)
+                            if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                                delta = chunk_data["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
+                        except json.JSONDecodeError:
+                            # Skip malformed JSON lines
+                            continue
+
+        except httpx.HTTPStatusError as e:
+            raise Exception(f"MLX server error: {e.response.status_code} - {e.response.text}")
+        except httpx.RequestError as e:
+            raise Exception(f"Failed to connect to MLX server: {str(e)}")
+
+    async def acomplete(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 512,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        stop: Optional[List[str]] = None,
+        thinking: bool = False,
+        response_format: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Get complete response from MLX server."""
+        await self._ensure_client()
+
+        # Prepare request data
+        request_data = {
+            "messages": messages,
+            "model": "apple-mlx",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stream": False,
+            "stop": stop,
+            "response_format": response_format
+        }
+
+        # Add system message if not already present
+        if self.system_message and not any(msg.get("role") == "system" for msg in messages):
+            request_data["messages"].insert(0, {"role": "system", "content": self.system_message})
+
+        try:
+            response = await self._client.post("/v1/chat/completions", json=request_data)
+            response.raise_for_status()
+
+            result = response.json()
+            if "choices" in result and len(result["choices"]) > 0:
+                return result["choices"][0]["message"]["content"]
+            else:
+                raise Exception("No response content received")
+
+        except httpx.HTTPStatusError as e:
+            raise Exception(f"MLX server error: {e.response.status_code} - {e.response.text}")
+        except httpx.RequestError as e:
+            raise Exception(f"Failed to connect to MLX server: {str(e)}")
+
+    async def unified_call(
+        self,
+        system_message: str = "",
+        user_message: str = "",
+        messages: List[Dict[str, str]] | None = None,
+        response_callback=None,
+        reasoning_callback=None,
+        tokens_callback=None,
+        rate_limiter_callback=None,
+        response_format: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> tuple[str, str]:
+        """Unified call method with callbacks."""
+        # Build messages list if not provided
+        if messages is None:
+            messages = []
+        if system_message or self.system_message:
+            effective_system = system_message or self.system_message
+            messages.insert(0, {"role": "system", "content": effective_system})
+        if user_message:
+            messages.append({"role": "user", "content": user_message})
+
+        # Not supporting reasoning for now - return empty string for reasoning
+        reasoning = ""
+
+        # Stream the response and collect it
+        response = ""
+        async for chunk in self.astream(messages, response_format=response_format, **kwargs):
+            response += chunk
+            if response_callback:
+                await response_callback(chunk, response)
+            if tokens_callback:
+                from python.helpers.tokens import approximate_tokens
+                await tokens_callback(chunk, approximate_tokens(chunk))
+
+        return response, reasoning
+
+    async def health_check(self) -> bool:
+        """Check if the MLX server is healthy."""
+        await self._ensure_client()
+
+        try:
+            response = await self._client.get("/healthz")
+            return response.status_code == 200
+        except Exception:
+            return False
+
+
 # Global provider instance
 _provider: Optional[AppleMLXProvider] = None
 
 # FastAPI app
 app = FastAPI(title="Apple MLX Server", version="1.0.0")
+
+# Global settings for startup
+_startup_settings: Optional[Dict[str, Any]] = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle application lifespan events."""
+    global _provider, _startup_settings
+    if _startup_settings and _provider is None:
+        await init_provider(_startup_settings)
+    yield
+
+# FastAPI app with modern lifespan
+app = FastAPI(title="Apple MLX Server", version="1.0.0", lifespan=lifespan)
 
 # Request/Response models
 class ChatCompletionRequest(BaseModel):
@@ -434,6 +743,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = None
     stream: Optional[bool] = False
     stop: Optional[List[str]] = None
+    response_format: Optional[Dict[str, Any]] = None
 
 class ChatCompletionChoice(BaseModel):
     index: int
@@ -477,7 +787,7 @@ async def list_models():
         ]
     }
 
-def init_provider(settings: Dict[str, Any]):
+async def init_provider(settings: Dict[str, Any]):
     global _provider
     if _provider is None:
         _provider = AppleMLXProvider(
@@ -491,7 +801,7 @@ def init_provider(settings: Dict[str, Any]):
             wired_limit_mb=settings.get("wired_limit_mb"),
             cache_limit_mb=settings.get("cache_limit_mb")
         )
-        asyncio.create_task(_provider.aload())
+        await _provider.aload()
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
@@ -507,7 +817,8 @@ async def chat_completions(request: ChatCompletionRequest):
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
                     top_p=request.top_p,
-                    stop=request.stop
+                    stop=request.stop,
+                    response_format=request.response_format
                 ):
                     response = ChatCompletionStreamResponse(
                         id="chatcmpl-magic",
@@ -535,7 +846,8 @@ async def chat_completions(request: ChatCompletionRequest):
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 top_p=request.top_p,
-                stop=request.stop
+                stop=request.stop,
+                response_format=request.response_format
             )
             return ChatCompletionResponse(
                 id="chatcmpl-magic",
@@ -560,13 +872,23 @@ def main():
     with open(settings_path) as f:
         settings = json.load(f)
 
-    mlx_settings = settings.get("apple_mlx", {})
-    if not mlx_settings.get("enabled", False):
+    # Check if MLX server is enabled
+    if not settings.get("mlx_server_enabled", False):
         print("Apple MLX not enabled")
         sys.exit(1)
 
-    init_provider(mlx_settings)
-    uvicorn.run(app, host="127.0.0.1", port=8001)
+    # Prepare settings for provider initialization
+    global _startup_settings
+    _startup_settings = {
+        "model_path": settings.get("apple_mlx_model_path", ""),
+        "max_kv_size": settings.get("mlx_server_max_kv_size", 2048),
+        "temperature": settings.get("mlx_server_temperature", 0.7),
+        "top_p": settings.get("mlx_server_top_p", 0.95),
+    }
+
+    # Get the correct port from settings
+    port = settings.get("mlx_server_port", 8082)
+    uvicorn.run(app, host="127.0.0.1", port=port)
 
 if __name__ == "__main__":
     main()

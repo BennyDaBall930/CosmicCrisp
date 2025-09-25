@@ -294,6 +294,12 @@ const settingsModalProxy = {
             openModal("settings/external/a2a-connection.html");
         } else if (field.id === "external_api_examples") {
             openModal("settings/external/api-examples.html");
+        } else if (field.id === "mlx_server_start") {
+            this.startMlxServer();
+        } else if (field.id === "mlx_server_stop") {
+            this.stopMlxServer();
+        } else if (field.id === "mlx_server_status") {
+            this.checkMlxServerStatus();
         }
     }
 };
@@ -558,6 +564,84 @@ document.addEventListener('alpine:init', function () {
                             break;
                         }
                     }
+                }
+            },
+
+            // Start MLX server
+            async startMlxServer() {
+                try {
+                    showToast('Starting MLX server...', 'info');
+
+                    const response = await fetchApi('/api/mlx_server_start', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.success) {
+                        showToast('MLX server started successfully', 'success');
+                    } else {
+                        throw new Error(data.error || 'Failed to start MLX server');
+                    }
+                } catch (error) {
+                    console.error('Failed to start MLX server:', error);
+                    showToast('Failed to start MLX server: ' + error.message, 'error');
+                }
+            },
+
+            // Stop MLX server
+            async stopMlxServer() {
+                try {
+                    showToast('Stopping MLX server...', 'info');
+
+                    const response = await fetchApi('/api/mlx_server_stop', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.success) {
+                        showToast('MLX server stopped successfully', 'success');
+                    } else {
+                        throw new Error(data.error || 'Failed to stop MLX server');
+                    }
+                } catch (error) {
+                    console.error('Failed to stop MLX server:', error);
+                    showToast('Failed to stop MLX server: ' + error.message, 'error');
+                }
+            },
+
+            // Check MLX server status
+            async checkMlxServerStatus() {
+                try {
+                    const response = await fetchApi('/api/mlx_server_status', {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.success) {
+                        const status = data.status;
+                        const message = `MLX server is ${status.status}`;
+                        if (status.status === 'running') {
+                            message += ` on port ${status.port}`;
+                        }
+                        showToast(message, 'info');
+                    } else {
+                        throw new Error(data.error || 'Failed to get MLX server status');
+                    }
+                } catch (error) {
+                    console.error('Failed to check MLX server status:', error);
+                    showToast('Failed to check MLX server status: ' + error.message, 'error');
                 }
             },
 
