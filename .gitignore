@@ -33,6 +33,7 @@ logs/*.pid
 logs/chrome_debug.log
 logs/ui.log
 logs/searxng.log
+Video_Generation_Projects/
 
 # Node and build artifacts
 node_modules/
