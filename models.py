@@ -668,14 +668,21 @@ def get_chat_model(provider: str, name: str, model_config: Optional[ModelConfig]
 
     # Provider switching hook: stop MLX server when switching away from apple_mlx
     if _last_provider == "apple_mlx" and orig != "apple_mlx":
-        print(f"[MLX Server] Stopping MLX server due to provider switch from {_last_provider} to {orig}")
         try:
             manager = MLXServerManager.get_instance()
-            result = manager.stop_server()
-            if result.get("success"):
-                print("[MLX Server] Server stopped successfully")
+            status = manager.get_status()
+            if status.get("managed"):
+                print(f"[MLX Server] Stopping MLX server due to provider switch from {_last_provider} to {orig}")
+                result = manager.stop_server()
+                if result.get("success"):
+                    print("[MLX Server] Server stopped successfully")
+                else:
+                    print(f"[MLX Server] Failed to stop server: {result.get('message')}")
             else:
-                print(f"[MLX Server] Failed to stop server: {result.get('message')}")
+                print(
+                    "[MLX Server] Skipping stop after provider switch because current "
+                    "server is unmanaged"
+                )
         except Exception as e:
             print(f"[MLX Server] Error stopping server: {e}")
 

@@ -104,6 +104,12 @@ class Settings(TypedDict):
     shell_interface: Literal['local','ssh']
 
     apple_mlx_model_path: str
+    mlx_server_max_tokens: int
+    mlx_server_max_kv_size: int
+    mlx_server_temperature: float
+    mlx_server_top_p: float
+    mlx_server_top_k: int
+    mlx_server_repetition_penalty: float
 
     stt_model_size: str
     stt_language: str
@@ -1230,6 +1236,69 @@ def convert_out(settings: Settings) -> SettingsOutput:
 
     mlx_server_fields.append(
         {
+            "id": "mlx_server_max_tokens",
+            "title": "Max Output Tokens",
+            "description": "Maximum number of tokens the MLX server may generate per request.",
+            "type": "number",
+            "value": settings["mlx_server_max_tokens"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_max_kv_size",
+            "title": "KV Cache Size",
+            "description": "Maximum key/value cache length permitted for the model.",
+            "type": "number",
+            "value": settings["mlx_server_max_kv_size"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_temperature",
+            "title": "Sampling Temperature",
+            "description": "Softmax temperature applied during sampling.",
+            "type": "number",
+            "step": 0.01,
+            "value": settings["mlx_server_temperature"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_top_p",
+            "title": "Top-p",
+            "description": "Nucleus sampling probability mass.",
+            "type": "number",
+            "step": 0.01,
+            "value": settings["mlx_server_top_p"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_top_k",
+            "title": "Top-k",
+            "description": "Number of highest-probability tokens considered during sampling.",
+            "type": "number",
+            "value": settings["mlx_server_top_k"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
+            "id": "mlx_server_repetition_penalty",
+            "title": "Repetition Penalty",
+            "description": "Penalty factor applied to repeated tokens during generation.",
+            "type": "number",
+            "step": 0.01,
+            "value": settings["mlx_server_repetition_penalty"],
+        }
+    )
+
+    mlx_server_fields.append(
+        {
             "id": "apple_mlx_model_path",
             "title": "MLX Model Path",
             "description": "Path to the local MLX model directory.",
@@ -1662,6 +1731,12 @@ def get_default_settings() -> Settings:
         rfc_port_ssh=55022,
         shell_interface="local" if runtime.is_dockerized() else "ssh",
         apple_mlx_model_path="",
+        mlx_server_max_tokens=32_768,
+        mlx_server_max_kv_size=1_010_000,
+        mlx_server_temperature=0.7,
+        mlx_server_top_p=0.8,
+        mlx_server_top_k=20,
+        mlx_server_repetition_penalty=1.05,
         stt_model_size="base",
         stt_language="en",
         stt_silence_threshold=0.3,

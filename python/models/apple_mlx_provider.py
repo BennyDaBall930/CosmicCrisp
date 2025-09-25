@@ -8,7 +8,7 @@ for proper MLX model handling, tokenization, and generation.
 """
 
 from __future__ import annotations
-from typing import AsyncIterator, Optional, List, Dict, Any, Iterator, Callable, NamedTuple
+from typing import AsyncIterator, Optional, List, Dict, Any, Iterator, Callable, NamedTuple, Sequence, Union
 import asyncio, gc, json, threading
 from pathlib import Path as FilePath
 from contextlib import asynccontextmanager
@@ -26,7 +26,7 @@ import mlx.core as mx
 import mlx_lm
 from mlx_lm.utils import load as mlx_load
 from mlx_lm.generate import stream_generate as mlx_stream_generate
-from mlx_lm.sample_utils import make_sampler
+from mlx_lm.sample_utils import make_sampler, make_logits_processors
 from transformers import AutoTokenizer, AutoProcessor
 
 # FastAPI components
@@ -36,6 +36,13 @@ from pydantic import BaseModel
 
 # HTTP client for MLX server
 import httpx
+
+try:
+    from langchain_core.messages import BaseMessage
+    HAS_LANGCHAIN_MESSAGES = True
+except ImportError:  # pragma: no cover - optional dependency
+    BaseMessage = object  # type: ignore
+    HAS_LANGCHAIN_MESSAGES = False
 
 
 # ============================================================================
@@ -120,6 +127,8 @@ def create_generator(
     stop_strings: Optional[List[str]] = None,
     max_tokens: Optional[int] = 100000,
     prompt_progress_callback: Optional[Callable[[float], bool]] = None,
+    repetition_penalty: Optional[float] = None,
+    max_kv_size: Optional[int] = None,
 ) -> Iterator[GenerationResult]:
     """Simplified create_generator implementation based on LM Studio's approach."""
     sampler = make_sampler(
@@ -132,13 +141,20 @@ def create_generator(
     # Simulate generation result structure
     text_accumulator = ""
 
+    logits_processors = None
+    if repetition_penalty and repetition_penalty != 1.0:
+        logits_processors = make_logits_processors(
+            repetition_penalty=repetition_penalty
+        )
+
     for chunk in mlx_stream_generate(
         model=model_kit.model,
         tokenizer=model_kit.tokenizer,
         prompt=prompt_tokens,
         max_tokens=max_tokens or 512,
         sampler=sampler,
-        max_kv_size=model_kit.max_kv_size,
+        max_kv_size=max_kv_size or model_kit.max_kv_size,
+        logits_processors=logits_processors,
     ):
         text_accumulator += chunk.text
 
@@ -188,6 +204,8 @@ class AppleMLXProvider:
         wired_limit_mb: Optional[int] = None,
         cache_limit_mb: Optional[int] = None,
         system_message: str = "",
+        max_tokens: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
     ):
         self._model_path = model_path
         # Convert string values to appropriate types to handle settings that may contain strings
@@ -200,6 +218,8 @@ class AppleMLXProvider:
         self._wired_limit_mb = int(wired_limit_mb) if wired_limit_mb is not None else None
         self._cache_limit_mb = int(cache_limit_mb) if cache_limit_mb is not None else None
         self.system_message = system_message
+        self._max_tokens_default = int(max_tokens) if max_tokens is not None else 512
+        self._repetition_penalty = float(repetition_penalty) if repetition_penalty is not None else None
         print(f"AppleMLXProvider.__init__: model_path='{model_path}', max_kv_size={self._max_kv_size}, temperature={self._temperature}, top_p={self._top_p}")
 
         self._model_kit = None
@@ -229,7 +249,10 @@ class AppleMLXProvider:
 
                 # Load transformers tokenizer separately (like LM Studio does)
                 self._hf_tokenizer = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: AutoTokenizer.from_pretrained(str(model_path_obj))
+                    None,
+                    lambda: AutoTokenizer.from_pretrained(
+                        str(model_path_obj), trust_remote_code=True
+                    ),
                 )
 
                 # Load chat template if available
@@ -261,10 +284,12 @@ class AppleMLXProvider:
 
     async def astream(
         self,
-        messages: List[Dict[str, str]],
-        max_tokens: int = 512,
+        messages: Sequence[Union[Dict[str, Any], BaseMessage]],
+        max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
         stop: Optional[List[str]] = None,
         thinking: bool = False,
         response_format: Optional[Dict[str, Any]] = None,
@@ -274,8 +299,17 @@ class AppleMLXProvider:
         if self._model_kit is None:
             await self.aload()
 
+        processed_messages = self._normalize_input_messages(messages)
+
+        max_kv_override = None
+        if "max_kv_size" in kwargs:
+            candidate = kwargs.pop("max_kv_size")
+            try:
+                max_kv_override = int(candidate) if candidate is not None else None
+            except (TypeError, ValueError):
+                max_kv_override = None
+
         # Add system message if not already present
-        processed_messages = messages.copy()
         if self.system_message and not any(msg.get("role") == "system" for msg in processed_messages):
             processed_messages.insert(0, {"role": "system", "content": self.system_message})
 
@@ -307,10 +341,15 @@ class AppleMLXProvider:
             "temp": self._temperature if temperature is None else temperature,
             "top_p": self._top_p if top_p is None else top_p,
             "min_p": self._min_p,
-            "top_k": self._top_k,
+            "top_k": self._top_k if top_k is None else top_k,
             "stop_strings": stop,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens_default,
+            "repetition_penalty": repetition_penalty if repetition_penalty is not None else self._repetition_penalty,
+            "max_kv_size": max_kv_override if max_kv_override is not None else self._max_kv_size,
         }
+
+        if kwargs:
+            generator_kwargs.update(kwargs)
 
         def run_generator():
             return create_generator(self._model_kit, prompt_tokens, **generator_kwargs)
@@ -450,7 +489,7 @@ class AppleMLXProvider:
         return response
 
     # Optional: single-shot convenience mirroring ChatWrapper
-    async def acomplete(self, messages: List[Dict[str, str]], response_format: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
+    async def acomplete(self, messages: Sequence[Union[Dict[str, Any], BaseMessage]], response_format: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
         out = []
         async for t in self.astream(messages, response_format=response_format, **kwargs):
             out.append(t)
@@ -466,7 +505,7 @@ class AppleMLXProvider:
         self,
         system_message: str = "",
         user_message: str = "",
-        messages: List[Dict[str, str]] | None = None,
+        messages: Sequence[Union[Dict[str, Any], BaseMessage]] | None = None,
         response_callback=None,
         reasoning_callback=None,
         tokens_callback=None,
@@ -476,18 +515,21 @@ class AppleMLXProvider:
     ) -> tuple[str, str]:
         # Build messages list if not provided
         if messages is None:
-            messages = []
+            working_messages: List[Union[Dict[str, Any], BaseMessage]] = []
+        else:
+            working_messages = list(messages)
+
         if system_message:
-            messages.insert(0, {"role": "system", "content": system_message})
+            working_messages.insert(0, {"role": "system", "content": system_message})
         if user_message:
-            messages.append({"role": "user", "content": user_message})
+            working_messages.append({"role": "user", "content": user_message})
 
         # Not supporting reasoning for now - return empty string for reasoning
         reasoning = ""
 
         # Stream the response and collect it
         response = ""
-        async for chunk in self.astream(messages, response_format=response_format, **kwargs):
+        async for chunk in self.astream(working_messages, response_format=response_format, **kwargs):
             response += chunk
             if response_callback:
                 await response_callback(chunk, response)
@@ -496,6 +538,69 @@ class AppleMLXProvider:
                 await tokens_callback(chunk, approximate_tokens(chunk))
 
         return response, reasoning
+
+    def _normalize_input_messages(
+        self, messages: Sequence[Union[Dict[str, Any], BaseMessage]]
+    ) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        role_mapping = {
+            "human": "user",
+            "ai": "assistant",
+            "system": "system",
+            "tool": "tool",
+        }
+
+        for message in messages:
+            if HAS_LANGCHAIN_MESSAGES and isinstance(message, BaseMessage):
+                role = role_mapping.get(getattr(message, "type", ""), getattr(message, "type", ""))
+                message_dict: Dict[str, Any] = {
+                    "role": role,
+                    "content": getattr(message, "content", ""),
+                }
+
+                tool_calls = getattr(message, "tool_calls", None)
+                if tool_calls:
+                    new_tool_calls = []
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            args = tool_call.get("args")
+                            if isinstance(args, dict):
+                                args_str = json.dumps(args)
+                            elif args is not None:
+                                args_str = json.dumps(args)
+                            else:
+                                args_str = "{}"
+                            new_tool_calls.append(
+                                {
+                                    "id": tool_call.get("id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_call.get("name", ""),
+                                        "arguments": args_str,
+                                    },
+                                }
+                            )
+                    if new_tool_calls:
+                        message_dict["tool_calls"] = new_tool_calls
+
+                tool_call_id = getattr(message, "tool_call_id", None)
+                if tool_call_id:
+                    message_dict["tool_call_id"] = tool_call_id
+
+                normalized.append(message_dict)
+            elif isinstance(message, dict):
+                normalized.append({
+                    "role": message.get("role"),
+                    "content": message.get("content", ""),
+                    **{k: v for k, v in message.items() if k not in {"role", "content"}}
+                })
+            else:
+                raise TypeError(
+                    "Unsupported message type for AppleMLXProvider: "
+                    f"{type(message).__name__}"
+                )
+
+        return normalized
 
     def _build_simple_chat_prompt(self, messages: List[Dict[str, str]], thinking: bool = False) -> str:
         """Fallback chat prompt builder for models without chat template."""
@@ -538,6 +643,19 @@ class MLXServerClient:
         self.timeout = timeout
         self.system_message = system_message
         self._client: Optional[httpx.AsyncClient] = None
+        try:
+            from python.helpers import settings as settings_module
+
+            current_settings = settings_module.get_settings()
+        except Exception:
+            current_settings = {}
+
+        self._max_tokens_default = int(current_settings.get("mlx_server_max_tokens", 512))
+        self._temperature_default = float(current_settings.get("mlx_server_temperature", 0.7))
+        self._top_p_default = float(current_settings.get("mlx_server_top_p", 0.95))
+        self._top_k_default = int(current_settings.get("mlx_server_top_k", 0))
+        self._repetition_penalty_default = float(current_settings.get("mlx_server_repetition_penalty", 1.0))
+        self._max_kv_size_default = int(current_settings.get("mlx_server_max_kv_size", 2048))
 
     async def __aenter__(self):
         await self._ensure_client()
@@ -561,12 +679,79 @@ class MLXServerClient:
             await self._client.aclose()
             self._client = None
 
+    def _normalize_messages(
+        self, messages: Sequence[Union[Dict[str, Any], BaseMessage]]
+    ) -> List[Dict[str, Any]]:
+        """Convert incoming messages into OpenAI-compatible dicts."""
+        normalized: List[Dict[str, Any]] = []
+        role_mapping = {
+            "human": "user",
+            "ai": "assistant",
+            "system": "system",
+            "tool": "tool",
+        }
+
+        for message in messages:
+            if HAS_LANGCHAIN_MESSAGES and isinstance(message, BaseMessage):
+                role = role_mapping.get(getattr(message, "type", ""), getattr(message, "type", ""))
+                message_dict: Dict[str, Any] = {
+                    "role": role,
+                    "content": getattr(message, "content", ""),
+                }
+
+                tool_calls = getattr(message, "tool_calls", None)
+                if tool_calls:
+                    new_tool_calls = []
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            args = tool_call.get("args")
+                            if isinstance(args, dict):
+                                args_str = json.dumps(args)
+                            elif args is not None:
+                                args_str = json.dumps(args)
+                            else:
+                                args_str = "{}"
+                            new_tool_calls.append(
+                                {
+                                    "id": tool_call.get("id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_call.get("name", ""),
+                                        "arguments": args_str,
+                                    },
+                                }
+                            )
+                    if new_tool_calls:
+                        message_dict["tool_calls"] = new_tool_calls
+
+                tool_call_id = getattr(message, "tool_call_id", None)
+                if tool_call_id:
+                    message_dict["tool_call_id"] = tool_call_id
+
+                normalized.append(message_dict)
+            elif isinstance(message, dict):
+                normalized.append({
+                    "role": message.get("role"),
+                    "content": message.get("content", ""),
+                    **{k: v for k, v in message.items() if k not in {"role", "content"}}
+                })
+            else:
+                raise TypeError(
+                    "Unsupported message type for MLXServerClient: "
+                    f"{type(message).__name__}"
+                )
+
+        return normalized
+
     async def astream(
         self,
-        messages: List[Dict[str, str]],
-        max_tokens: int = 512,
+        messages: Sequence[Union[Dict[str, Any], BaseMessage]],
+        max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        max_kv_size: Optional[int] = None,
         stop: Optional[List[str]] = None,
         thinking: bool = False,
         response_format: Optional[Dict[str, Any]] = None,
@@ -575,20 +760,40 @@ class MLXServerClient:
         """Stream response from MLX server using SSE."""
         await self._ensure_client()
 
+        serialized_messages = self._normalize_messages(messages)
+
         # Prepare request data
+        final_top_k = top_k if top_k is not None else self._top_k_default
+        if final_top_k == 0:
+            final_top_k = None
+
+        final_repetition = (
+            repetition_penalty if repetition_penalty is not None else self._repetition_penalty_default
+        )
+        if final_repetition == 1.0:
+            final_repetition = None
+
         request_data = {
-            "messages": messages,
+            "messages": serialized_messages,
             "model": "apple-mlx",
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
+            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens_default,
+            "temperature": temperature if temperature is not None else self._temperature_default,
+            "top_p": top_p if top_p is not None else self._top_p_default,
+            "top_k": final_top_k,
+            "repetition_penalty": final_repetition,
+            "max_kv_size": max_kv_size if max_kv_size is not None else self._max_kv_size_default,
             "stream": True,
             "stop": stop,
             "response_format": response_format
         }
 
+        if request_data["top_k"] is None:
+            request_data.pop("top_k")
+        if request_data["repetition_penalty"] is None:
+            request_data.pop("repetition_penalty")
+
         # Add system message if not already present
-        if self.system_message and not any(msg.get("role") == "system" for msg in messages):
+        if self.system_message and not any(msg.get("role") == "system" for msg in serialized_messages):
             request_data["messages"].insert(0, {"role": "system", "content": self.system_message})
 
         try:
@@ -623,10 +828,13 @@ class MLXServerClient:
 
     async def acomplete(
         self,
-        messages: List[Dict[str, str]],
-        max_tokens: int = 512,
+        messages: Sequence[Union[Dict[str, Any], BaseMessage]],
+        max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        max_kv_size: Optional[int] = None,
         stop: Optional[List[str]] = None,
         thinking: bool = False,
         response_format: Optional[Dict[str, Any]] = None,
@@ -635,20 +843,40 @@ class MLXServerClient:
         """Get complete response from MLX server."""
         await self._ensure_client()
 
+        serialized_messages = self._normalize_messages(messages)
+
+        final_top_k = top_k if top_k is not None else self._top_k_default
+        if final_top_k == 0:
+            final_top_k = None
+
+        final_repetition = (
+            repetition_penalty if repetition_penalty is not None else self._repetition_penalty_default
+        )
+        if final_repetition == 1.0:
+            final_repetition = None
+
         # Prepare request data
         request_data = {
-            "messages": messages,
+            "messages": serialized_messages,
             "model": "apple-mlx",
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
+            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens_default,
+            "temperature": temperature if temperature is not None else self._temperature_default,
+            "top_p": top_p if top_p is not None else self._top_p_default,
+            "top_k": final_top_k,
+            "repetition_penalty": final_repetition,
+            "max_kv_size": max_kv_size if max_kv_size is not None else self._max_kv_size_default,
             "stream": False,
             "stop": stop,
             "response_format": response_format
         }
 
+        if request_data["top_k"] is None:
+            request_data.pop("top_k")
+        if request_data["repetition_penalty"] is None:
+            request_data.pop("repetition_penalty")
+
         # Add system message if not already present
-        if self.system_message and not any(msg.get("role") == "system" for msg in messages):
+        if self.system_message and not any(msg.get("role") == "system" for msg in serialized_messages):
             request_data["messages"].insert(0, {"role": "system", "content": self.system_message})
 
         try:
@@ -681,19 +909,22 @@ class MLXServerClient:
         """Unified call method with callbacks."""
         # Build messages list if not provided
         if messages is None:
-            messages = []
+            working_messages: List[Union[Dict[str, Any], BaseMessage]] = []
+        else:
+            working_messages = list(messages)
+
         if system_message or self.system_message:
             effective_system = system_message or self.system_message
-            messages.insert(0, {"role": "system", "content": effective_system})
+            working_messages.insert(0, {"role": "system", "content": effective_system})
         if user_message:
-            messages.append({"role": "user", "content": user_message})
+            working_messages.append({"role": "user", "content": user_message})
 
         # Not supporting reasoning for now - return empty string for reasoning
         reasoning = ""
 
         # Stream the response and collect it
         response = ""
-        async for chunk in self.astream(messages, response_format=response_format, **kwargs):
+        async for chunk in self.astream(working_messages, response_format=response_format, **kwargs):
             response += chunk
             if response_callback:
                 await response_callback(chunk, response)
@@ -741,6 +972,9 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repetition_penalty: Optional[float] = None
+    max_kv_size: Optional[int] = None
     stream: Optional[bool] = False
     stop: Optional[List[str]] = None
     response_format: Optional[Dict[str, Any]] = None
@@ -799,7 +1033,9 @@ async def init_provider(settings: Dict[str, Any]):
             min_p=settings.get("min_p"),
             quantization=settings.get("quantization"),
             wired_limit_mb=settings.get("wired_limit_mb"),
-            cache_limit_mb=settings.get("cache_limit_mb")
+            cache_limit_mb=settings.get("cache_limit_mb"),
+            max_tokens=settings.get("max_tokens"),
+            repetition_penalty=settings.get("repetition_penalty"),
         )
         await _provider.aload()
 
@@ -817,6 +1053,9 @@ async def chat_completions(request: ChatCompletionRequest):
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
                     top_p=request.top_p,
+                    top_k=request.top_k,
+                    repetition_penalty=request.repetition_penalty,
+                    max_kv_size=request.max_kv_size,
                     stop=request.stop,
                     response_format=request.response_format
                 ):
@@ -846,6 +1085,9 @@ async def chat_completions(request: ChatCompletionRequest):
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 top_p=request.top_p,
+                top_k=request.top_k,
+                repetition_penalty=request.repetition_penalty,
+                max_kv_size=request.max_kv_size,
                 stop=request.stop,
                 response_format=request.response_format
             )
@@ -877,13 +1119,91 @@ def main():
         print("Apple MLX not enabled")
         sys.exit(1)
 
+    model_path = settings.get("apple_mlx_model_path", "")
+    config_data: Dict[str, Any] = {}
+    config_path = None
+    if model_path:
+        config_path = FilePath(model_path) / "generation_config.json"
+        if config_path.exists():
+            try:
+                with open(config_path) as cf:
+                    config_data = json.load(cf)
+            except Exception as exc:
+                print(f"Warning: Failed to read generation_config.json: {exc}")
+
+    def _coerce_float(value, fallback):
+        for candidate in (value, fallback):
+            if candidate is None:
+                continue
+            if isinstance(candidate, str) and not candidate.strip():
+                continue
+            try:
+                return float(candidate)
+            except (TypeError, ValueError):
+                continue
+        return float(fallback) if fallback is not None else 0.0
+
+    def _coerce_int(value, fallback):
+        for candidate in (value, fallback):
+            if candidate is None:
+                continue
+            if isinstance(candidate, str) and not candidate.strip():
+                continue
+            try:
+                return int(candidate)
+            except (TypeError, ValueError):
+                continue
+        return int(fallback) if fallback is not None else 0
+
+    final_temperature = _coerce_float(settings.get("mlx_server_temperature"), config_data.get("temperature", 0.7))
+    final_top_p = _coerce_float(settings.get("mlx_server_top_p"), config_data.get("top_p", 0.95))
+    final_top_k = _coerce_int(settings.get("mlx_server_top_k"), config_data.get("top_k", 0))
+    effective_top_k = final_top_k if final_top_k > 0 else None
+    final_repetition = _coerce_float(settings.get("mlx_server_repetition_penalty"), config_data.get("repetition_penalty", 1.0))
+    final_max_tokens = _coerce_int(
+        settings.get("mlx_server_max_tokens"),
+        config_data.get("max_new_tokens") or config_data.get("max_output_tokens") or 512,
+    )
+    final_max_kv_size = _coerce_int(settings.get("mlx_server_max_kv_size"), config_data.get("max_kv_size", 2048))
+
+    if config_path and config_path.exists():
+        try:
+            updated = False
+            if config_data.get("temperature") != final_temperature:
+                config_data["temperature"] = final_temperature
+                updated = True
+            if config_data.get("top_p") != final_top_p:
+                config_data["top_p"] = final_top_p
+                updated = True
+            if effective_top_k is not None and config_data.get("top_k") != effective_top_k:
+                config_data["top_k"] = effective_top_k
+                updated = True
+            if config_data.get("repetition_penalty") != final_repetition:
+                config_data["repetition_penalty"] = final_repetition
+                updated = True
+            if config_data.get("max_new_tokens") != final_max_tokens:
+                config_data["max_new_tokens"] = final_max_tokens
+                updated = True
+            if updated:
+                with open(config_path, "w") as cf:
+                    json.dump(config_data, cf, indent=2)
+        except Exception as exc:
+            print(f"Warning: Failed to update generation_config.json: {exc}")
+
     # Prepare settings for provider initialization
     global _startup_settings
     _startup_settings = {
-        "model_path": settings.get("apple_mlx_model_path", ""),
-        "max_kv_size": settings.get("mlx_server_max_kv_size", 2048),
-        "temperature": settings.get("mlx_server_temperature", 0.7),
-        "top_p": settings.get("mlx_server_top_p", 0.95),
+        "model_path": model_path,
+        "max_kv_size": final_max_kv_size,
+        "temperature": final_temperature,
+        "top_p": final_top_p,
+        "top_k": effective_top_k,
+        "max_tokens": final_max_tokens,
+        "repetition_penalty": final_repetition,
+        "min_p": settings.get("mlx_server_min_p"),
+        "quantization": settings.get("mlx_server_quantization"),
+        "wired_limit_mb": settings.get("mlx_server_wired_limit_mb"),
+        "cache_limit_mb": settings.get("mlx_server_cache_limit_mb"),
     }
 
     # Get the correct port from settings

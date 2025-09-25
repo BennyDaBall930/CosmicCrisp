@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import threading
 import signal
@@ -16,6 +17,7 @@ except ImportError:
 from python.helpers.print_style import PrintStyle
 
 _PRINTER = PrintStyle(italic=True, font_color="blue", padding=False)
+_INSTANCE: Optional['MLXServerManager'] = None
 
 
 class MLXServerManager:
@@ -34,9 +36,12 @@ class MLXServerManager:
 
         # File-based persistence for singleton across reloads
         from pathlib import Path
-        self._persistence_dir = Path(__file__).parent.parent / "tmp" / "mlx_server"
+        helpers_dir = Path(__file__).parent
+        self._persistence_dir = helpers_dir.parent / "tmp" / "mlx_server"
         self._persistence_dir.mkdir(parents=True, exist_ok=True)
         self._persistence_file = self._persistence_dir / "server_state.json"
+        self._project_root = helpers_dir.parent.parent
+        self._external_pid_file = self._project_root / "tmp" / "mlx.pid"
 
     def _save_state(self):
         """Save server state to persistent storage."""
@@ -53,7 +58,7 @@ class MLXServerManager:
         except Exception as e:
             _PRINTER.print(f"[MLX Server] Error saving state: {e}")
 
-    def _load_state(self):
+    def _load_state(self, *, ignore_expiry: bool = False):
         """Load server state from persistent storage."""
         try:
             if not self._persistence_file.exists():
@@ -64,7 +69,7 @@ class MLXServerManager:
 
             # Validate state is recent (within last 5 minutes)
             timestamp = state.get("timestamp", 0)
-            if time.time() - timestamp > 300:  # 5 minutes
+            if not ignore_expiry and time.time() - timestamp > 300:  # 5 minutes
                 return None
 
             return state
@@ -105,19 +110,18 @@ class MLXServerManager:
                     self._process = None
                     _PRINTER.print("[MLX Server] Previous server process no longer exists")
 
-    @staticmethod
-    def get_instance() -> 'MLXServerManager':
-        # Check if we have a persisted instance
-        temp_instance = MLXServerManager()
-        state = temp_instance._load_state()
+    @classmethod
+    def get_instance(cls) -> 'MLXServerManager':
+        """Return a process-wide singleton instance."""
+        global _INSTANCE
 
-        if state and state.get("status") == "running":
-            # Restore the existing instance state
-            temp_instance._restore_state()
-            return temp_instance
-        else:
-            # No persisted running instance, return fresh instance
-            return temp_instance
+        if _INSTANCE is not None and isinstance(_INSTANCE, cls):
+            return _INSTANCE
+
+        instance = cls()
+        instance._restore_state()
+        _INSTANCE = instance
+        return instance
 
     def start_server(self, settings_path: Optional[str] = None, port: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -169,12 +173,32 @@ class MLXServerManager:
 
                 # Check if the port is available before starting
                 if not self._check_port_available(self._port):
-                    return {"success": False, "message": f"Port {self._port} is already in use. Please stop any existing MLX server or choose a different port."}
+                    if self._check_server_health():
+                        self._status = "running"
+                        self._process = None
+                        self._save_state()
+                        _PRINTER.print(
+                            f"[MLX Server] Detected existing server on port {self._port}; "
+                            "adopting unmanaged instance."
+                        )
+                        return {
+                            "success": True,
+                            "message": f"MLX server already running on port {self._port}"
+                        }
+                    return {
+                        "success": False,
+                        "message": (
+                            f"Port {self._port} is already in use. Please stop any existing "
+                            "MLX server or choose a different port."
+                        ),
+                    }
 
                 # Start the server subprocess
                 cmd = [
-                    "python", "-m", "python.models.apple_mlx_provider",
-                    self._settings_path
+                    sys.executable,
+                    "-m",
+                    "python.models.apple_mlx_provider",
+                    self._settings_path,
                 ]
 
                 _PRINTER.print(f"[MLX Server] Starting server with command: {' '.join(cmd)}")
@@ -195,6 +219,12 @@ class MLXServerManager:
                 self._status = "starting"
                 self._save_state()
                 _PRINTER.print(f"[MLX Server] Server process started with PID: {self._process.pid}")
+                try:
+                    self._external_pid_file.parent.mkdir(parents=True, exist_ok=True)
+                    if self._process and self._process.pid:
+                        self._external_pid_file.write_text(str(self._process.pid))
+                except Exception as e:
+                    _PRINTER.print(f"[MLX Server] Warning: unable to write PID file: {e}")
 
                 # Wait for server to start and model to load (MLX models can take time)
                 _PRINTER.print("[MLX Server] Waiting for server to initialize and load model...")
@@ -232,12 +262,13 @@ class MLXServerManager:
             try:
                 _PRINTER.print("[MLX Server] Stopping server...")
 
-                # Try graceful shutdown first
-                if self._process and self._process.poll() is None:
-                    # Send SIGTERM to process group
+                managed_process = self._process and self._process.poll() is None
+                target_pid: Optional[int] = None
+
+                if managed_process and self._process:
+                    target_pid = self._process.pid
                     try:
                         os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
-                        # Wait up to 10 seconds for graceful shutdown
                         for _ in range(10):
                             if self._process.poll() is not None:
                                 break
@@ -245,14 +276,34 @@ class MLXServerManager:
                     except (OSError, ProcessLookupError):
                         pass  # Process might have already exited
 
-                # If still running, force kill
-                if self._process and self._process.poll() is None:
-                    _PRINTER.print("[MLX Server] Force killing server process...")
-                    try:
-                        os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
-                        self._process.wait(timeout=5)
-                    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-                        pass
+                    if self._process and self._process.poll() is None:
+                        _PRINTER.print("[MLX Server] Force killing server process...")
+                        try:
+                            os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
+                            self._process.wait(timeout=5)
+                        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+                            pass
+                else:
+                    target_pid = self._find_external_pid()
+                    if target_pid is None:
+                        message = "MLX server process is not managed and PID could not be determined"
+                        _PRINTER.print(f"[MLX Server] {message}")
+                        return {"success": False, "message": message}
+
+                    if not self._terminate_pid(target_pid):
+                        message = f"Failed to terminate external MLX server process {target_pid}"
+                        _PRINTER.print(f"[MLX Server] {message}")
+                        return {"success": False, "message": message}
+
+                if target_pid is not None:
+                    for _ in range(5):
+                        if self._check_port_available(self._port):
+                            break
+                        time.sleep(1)
+                    else:
+                        message = f"Port {self._port} is still in use after stop attempt"
+                        _PRINTER.print(f"[MLX Server] {message}")
+                        return {"success": False, "message": message}
 
                 self._cleanup_process()
                 self._status = "stopped"
@@ -353,14 +404,63 @@ class MLXServerManager:
             except Exception:
                 pass
             self._process = None
-
-    def __del__(self):
-        """Cleanup on destruction."""
         try:
-            self.stop_server()
+            if self._external_pid_file.exists():
+                self._external_pid_file.unlink()
         except Exception:
             pass
 
+    def _find_external_pid(self) -> Optional[int]:
+        """Locate a PID for an MLX server started outside this manager."""
+        state = self._load_state(ignore_expiry=True)
+        pid = state.get("pid") if state else None
+        if pid and self._pid_is_alive(pid):
+            return pid
+
+        if self._external_pid_file.exists():
+            try:
+                raw = self._external_pid_file.read_text().strip()
+                if raw:
+                    pid = int(raw)
+                    if self._pid_is_alive(pid):
+                        return pid
+            except Exception:
+                pass
+
+        return None
+
+    @staticmethod
+    def _pid_is_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _terminate_pid(self, pid: int) -> bool:
+        """Attempt to terminate an external PID and confirm it exited."""
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            return True
+
+        for _ in range(10):
+            if not self._pid_is_alive(pid):
+                break
+            time.sleep(1)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                return True
+            for _ in range(5):
+                if not self._pid_is_alive(pid):
+                    break
+                time.sleep(1)
+            else:
+                return False
+
+        return True
 
 # Convenience functions
 def start_mlx_server(settings_path: Optional[str] = None) -> Dict[str, Any]:

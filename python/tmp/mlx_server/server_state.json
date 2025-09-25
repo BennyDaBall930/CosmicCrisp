@@ -1,7 +1,7 @@
 {
-  "status": "stopped",
+  "status": "running",
   "pid": null,
   "port": 8082,
   "settings_path": null,
-  "timestamp": 1758809921.318605
+  "timestamp": 1758816780.418923
 }
