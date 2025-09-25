@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from cosmiccrisp.agent.task_parser import ToolCall
+from python.runtime.agent.task_parser import ToolCall
 
 
 def test_invalid_tool():

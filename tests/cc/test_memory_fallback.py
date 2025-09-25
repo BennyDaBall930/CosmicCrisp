@@ -1,8 +1,8 @@
 import pytest
 
-from cosmiccrisp.memory.fallback import MemoryWithFallback
-from cosmiccrisp.memory.null import NullMemory
-from cosmiccrisp.memory.interface import AgentMemory
+from python.runtime.memory.fallback import MemoryWithFallback
+from python.runtime.memory.null import NullMemory
+from python.runtime.memory.interface import AgentMemory
 
 
 class BadMemory(AgentMemory):

@@ -31,8 +31,8 @@ class TestMem0Local:
     async def test_fallback_when_mem0_unavailable(self):
         """Test fallback to SQLite when mem0 is not available."""
         # Mock mem0 imports to raise ImportError
-        with patch('cosmiccrisp.python.runtime.memory.stores.mem0_adapter._LegacyMem0', None), \
-             patch('cosmiccrisp.python.runtime.memory.stores.mem0_adapter._Mem0Client', None):
+        with patch('python.runtime.memory.stores.mem0_adapter._LegacyMem0', None), \
+             patch('python.runtime.memory.stores.mem0_adapter._Mem0Client', None):
 
             adapter = Mem0Adapter()
             assert adapter._client is None
