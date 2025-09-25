@@ -8,7 +8,7 @@ for proper MLX model handling, tokenization, and generation.
 """
 
 from __future__ import annotations
-from typing import AsyncIterator, Optional, List, Dict, Any, Iterator, Callable, NamedTuple, Sequence, Union
+from typing import AsyncIterator, Optional, List, Dict, Any, Iterator, Callable, NamedTuple, Sequence, Union, Tuple
 import asyncio, gc, json, threading
 from pathlib import Path as FilePath
 from contextlib import asynccontextmanager
@@ -294,7 +294,7 @@ class AppleMLXProvider:
         thinking: bool = False,
         response_format: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[Tuple[str, Optional[Dict[str, Any]]]]:
         # Ensure model is loaded
         if self._model_kit is None:
             await self.aload()
@@ -335,6 +335,7 @@ class AppleMLXProvider:
 
         # Convert prompt to tokens using the model kit tokenizer
         prompt_tokens = self._model_kit.tokenize(prompt)
+        prompt_token_count = len(prompt_tokens)
 
         # Use LM Studio's create_generator with thinking model support
         generator_kwargs = {
@@ -360,6 +361,7 @@ class AppleMLXProvider:
         # Process generation results and handle thinking output
         full_response = ""
         in_think_block = False
+        finish_reason = "stop"
 
         for result in generation_iterator:
             # Handle thinking tags for thinking models
@@ -367,21 +369,32 @@ class AppleMLXProvider:
                 processed_text = await self._process_thinking_output(result.text, full_response, in_think_block)
                 full_response += result.text  # Always add to accumulator
 
-                # Yield the processed chunk (might be empty if in the middle of processing)
                 if processed_text:
-                    yield processed_text
+                    yield processed_text, None
 
-                # Check for stop condition
                 if result.stop_condition:
+                    finish_reason = result.stop_condition.stop_reason or "stop"
                     break
             else:
-                # Non-thinking models: yield raw text
                 full_response += result.text
-                yield result.text
+                if result.text:
+                    yield result.text, None
 
-                # Check for stop condition
                 if result.stop_condition:
+                    finish_reason = result.stop_condition.stop_reason or "stop"
                     break
+
+        if response_format:
+            full_response = self._validate_structured_output(full_response, response_format)
+
+        completion_tokens = len(self._model_kit.tokenize(full_response)) if full_response else 0
+        usage = {
+            "prompt_tokens": prompt_token_count,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_token_count + completion_tokens,
+        }
+
+        yield "", {"usage": usage, "finish_reason": finish_reason}
 
     async def _process_thinking_output(self, new_text: str, full_response: str, in_think_block: bool) -> str:
         """Process thinking model output with proper <think> tag handling."""
@@ -489,17 +502,30 @@ class AppleMLXProvider:
         return response
 
     # Optional: single-shot convenience mirroring ChatWrapper
-    async def acomplete(self, messages: Sequence[Union[Dict[str, Any], BaseMessage]], response_format: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
-        out = []
-        async for t in self.astream(messages, response_format=response_format, **kwargs):
-            out.append(t)
+    async def acomplete(
+        self,
+        messages: Sequence[Union[Dict[str, Any], BaseMessage]],
+        response_format: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Tuple[str, Dict[str, Any]]:
+        out: List[str] = []
+        metadata: Dict[str, Any] = {
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "finish_reason": "stop",
+        }
+
+        async for chunk, info in self.astream(messages, response_format=response_format, **kwargs):
+            if chunk:
+                out.append(chunk)
+            if info:
+                metadata = info
+
         full_response = "".join(out)
 
-        # Validate and clean structured output if response_format is specified
         if response_format:
             full_response = self._validate_structured_output(full_response, response_format)
 
-        return full_response
+        return full_response, metadata
 
     async def unified_call(
         self,
@@ -529,13 +555,14 @@ class AppleMLXProvider:
 
         # Stream the response and collect it
         response = ""
-        async for chunk in self.astream(working_messages, response_format=response_format, **kwargs):
-            response += chunk
-            if response_callback:
-                await response_callback(chunk, response)
-            if tokens_callback:
-                from python.helpers.tokens import approximate_tokens
-                await tokens_callback(chunk, approximate_tokens(chunk))
+        async for chunk, meta in self.astream(working_messages, response_format=response_format, **kwargs):
+            if chunk:
+                response += chunk
+                if response_callback:
+                    await response_callback(chunk, response)
+                if tokens_callback:
+                    from python.helpers.tokens import approximate_tokens
+                    await tokens_callback(chunk, approximate_tokens(chunk))
 
         return response, reasoning
 
@@ -979,6 +1006,11 @@ class ChatCompletionRequest(BaseModel):
     stop: Optional[List[str]] = None
     response_format: Optional[Dict[str, Any]] = None
 
+class ChatCompletionUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
 class ChatCompletionChoice(BaseModel):
     index: int
     message: Dict[str, str]
@@ -990,6 +1022,7 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: List[ChatCompletionChoice]
+    usage: ChatCompletionUsage
 
 class ChatCompletionStreamChoice(BaseModel):
     index: int
@@ -1002,6 +1035,7 @@ class ChatCompletionStreamResponse(BaseModel):
     created: int
     model: str
     choices: List[ChatCompletionStreamChoice]
+    usage: Optional[ChatCompletionUsage] = None
 
 @app.get("/healthz")
 async def health_check():
@@ -1048,7 +1082,7 @@ async def chat_completions(request: ChatCompletionRequest):
     if request.stream:
         async def generate():
             try:
-                async for chunk in _provider.astream(
+                async for chunk, info in _provider.astream(
                     messages=request.messages,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
@@ -1059,16 +1093,41 @@ async def chat_completions(request: ChatCompletionRequest):
                     stop=request.stop,
                     response_format=request.response_format
                 ):
-                    response = ChatCompletionStreamResponse(
-                        id="chatcmpl-magic",
-                        created=0,
-                        model=request.model,
-                        choices=[ChatCompletionStreamChoice(
-                            index=0,
-                            delta={"content": chunk}
-                        )]
-                    )
-                    yield f"data: {json.dumps(response.model_dump())}\n\n"
+                    if chunk:
+                        payload = {
+                            "id": "chatcmpl-magic",
+                            "object": "chat.completion.chunk",
+                            "created": 0,
+                            "model": request.model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": chunk},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        yield f"data: {json.dumps(payload)}\n\n"
+
+                    if info:
+                        usage_dict = info.get("usage")
+                        finish_reason = info.get("finish_reason", "stop")
+                        payload = {
+                            "id": "chatcmpl-magic",
+                            "object": "chat.completion.chunk",
+                            "created": 0,
+                            "model": request.model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": finish_reason,
+                                }
+                            ],
+                        }
+                        if usage_dict:
+                            payload["usage"] = usage_dict
+                        yield f"data: {json.dumps(payload)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -1080,7 +1139,7 @@ async def chat_completions(request: ChatCompletionRequest):
         )
     else:
         try:
-            content = await _provider.acomplete(
+            content, metadata = await _provider.acomplete(
                 messages=request.messages,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
@@ -1091,6 +1150,13 @@ async def chat_completions(request: ChatCompletionRequest):
                 stop=request.stop,
                 response_format=request.response_format
             )
+            usage_dict = metadata.get("usage") if metadata else None
+            finish_reason = metadata.get("finish_reason", "stop") if metadata else "stop"
+            usage_model = ChatCompletionUsage(**usage_dict) if usage_dict else ChatCompletionUsage(
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+            )
             return ChatCompletionResponse(
                 id="chatcmpl-magic",
                 created=0,
@@ -1098,8 +1164,9 @@ async def chat_completions(request: ChatCompletionRequest):
                 choices=[ChatCompletionChoice(
                     index=0,
                     message={"role": "assistant", "content": content},
-                    finish_reason="stop"
-                )]
+                    finish_reason=finish_reason
+                )],
+                usage=usage_model,
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
