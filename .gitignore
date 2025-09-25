@@ -63,6 +63,7 @@ instruments/**
 # Global rule to include .gitkeep files anywhere
 !**/.gitkeep
 agent_history.gif
+implementation_plan.md
 
 # Ignore MLX model directories
 BennyDaBall_Qwen3-30B-A3B-ThinkCode-Linear-FP32-MLX_4bit/
