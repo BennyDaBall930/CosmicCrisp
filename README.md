@@ -5,7 +5,7 @@
 
 <p><em>"The macOS-native evolution of Agent Zero - where AI meets Apple Silicon magic!"</em></p>
 
-[![Stars](https://img.shields.io/github/stars/your-repo/cosmiccrisp?style=for-the-badge&logo=github)](https://github.com/your-repo/cosmiccrisp)
+[![Stars](https://img.shields.io/github/stars/BennyDaBall930/cosmiccrisp?style=for-the-badge&logo=github)](https://github.com/BennyDaBall930/cosmiccrisp)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey?style=for-the-badge&logo=apple)](https://www.apple.com/macos/)
 
