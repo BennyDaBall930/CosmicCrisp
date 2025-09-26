@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import Annotated, Literal, Union
 from urllib.parse import urlparse
 from openai import BaseModel
@@ -18,7 +19,7 @@ from fastmcp.server.http import create_sse_app
 from starlette.requests import Request
 import threading
 
-_PRINTER = PrintStyle(italic=True, font_color="green", padding=False)
+_PRINTER = PrintStyle(italic=True, font_color="green", padding=False, level=logging.DEBUG)
 
 
 mcp_server: FastMCP = FastMCP(
@@ -261,7 +262,7 @@ async def _run_chat(
 
     except Exception as e:
         # Error
-        _PRINTER.print(f"MCP Chat message failed: {e}")
+        PrintStyle(font_color="red", padding=True, level=logging.ERROR).print(f"MCP Chat message failed: {e}")
 
         raise RuntimeError(f"MCP Chat message failed: {e}") from e
 

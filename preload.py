@@ -1,6 +1,7 @@
 import asyncio
 import subprocess
 import os
+import logging
 from python.helpers import runtime, whisper, settings
 from python.helpers.chatterbox_tts import config_from_dict, get_backend
 from python.helpers.print_style import PrintStyle
@@ -41,7 +42,7 @@ async def preload():
                 cfg_map = tts_settings.get("chatterbox")
                 cfg = config_from_dict(cfg_map if isinstance(cfg_map, dict) else {})
                 await asyncio.to_thread(get_backend, cfg)
-                PrintStyle().print("Chatterbox backend warmed up")
+                PrintStyle(level=logging.DEBUG).print("Chatterbox backend warmed up")
             except Exception as e:
                 PrintStyle().error(f"Error in preload_chatterbox: {e}")
 
@@ -51,7 +52,7 @@ async def preload():
                 if not current.get("mlx_server_enabled", False):
                     return
 
-                PrintStyle().print("Checking MLX server status...")
+                PrintStyle(level=logging.DEBUG).print("Checking MLX server status...")
 
                 # Import MLXServerManager here to avoid circular imports
                 from python.helpers.mlx_server import MLXServerManager
@@ -61,10 +62,11 @@ async def preload():
                 status = manager.get_status()
 
                 if status["status"] == "running":
-                    PrintStyle().print("MLX server is running and healthy.")
+                    PrintStyle(level=logging.DEBUG).print("MLX server is running and healthy.")
                 else:
-                    PrintStyle().error(f"MLX server is not running. Current status: {status['status']}")
-                    PrintStyle().error("Please ensure the MLX server is started before using MLX models.")
+                    PrintStyle(level=logging.DEBUG).print(
+                        f"MLX server is not ready yet (status: {status['status']})."
+                    )
 
             except Exception as e:
                 PrintStyle().error(f"Error checking MLX server status: {e}")

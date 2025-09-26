@@ -1,4 +1,4 @@
-import os, webcolors, html
+import os, logging, webcolors, html
 import sys
 from datetime import datetime
 from . import files
@@ -6,8 +6,10 @@ from . import files
 class PrintStyle:
     last_endline = True
     log_file_path = None
+    _logger = logging.getLogger("a0.print_style")
+    _console_threshold = getattr(logging, os.getenv("A0_CONSOLE_LEVEL", "INFO").upper(), logging.INFO)
 
-    def __init__(self, bold=False, italic=False, underline=False, font_color="default", background_color="default", padding=False, log_only=False):
+    def __init__(self, bold=False, italic=False, underline=False, font_color="default", background_color="default", padding=False, log_only=False, level=logging.INFO):
         self.bold = bold
         self.italic = italic
         self.underline = underline
@@ -16,6 +18,7 @@ class PrintStyle:
         self.padding = padding
         self.padding_added = False  # Flag to track if padding was added
         self.log_only = log_only
+        self.level = level if level is not None else logging.INFO
 
         if PrintStyle.log_file_path is None:
             logs_dir = files.get_abs_path("logs")
@@ -75,7 +78,7 @@ class PrintStyle:
 
     def _add_padding_if_needed(self):
         if self.padding and not self.padding_added:
-            if not self.log_only:
+            if self._should_print():
                 print()  # Print an empty line for padding
             self._log_html("<br>")
             self.padding_added = True
@@ -83,6 +86,9 @@ class PrintStyle:
     def _log_html(self, html):
         with open(PrintStyle.log_file_path, "a", encoding='utf-8') as f: # type: ignore # add encoding='utf-8'
             f.write(html)
+
+    def _should_print(self) -> bool:
+        return (not self.log_only) and (self.level >= PrintStyle._console_threshold)
 
     @staticmethod
     def _close_html_log():
@@ -96,21 +102,26 @@ class PrintStyle:
 
     def print(self, *args, sep=' ', **kwargs):
         self._add_padding_if_needed()
+        should_print = self._should_print()
         if not PrintStyle.last_endline:
-            print()
+            if should_print:
+                print()
             self._log_html("<br>")
         plain_text, styled_text, html_text = self.get(*args, sep=sep, **kwargs)
-        if not self.log_only:
+        if should_print:
             print(styled_text, end='\n', flush=True)
         self._log_html(html_text+"<br>\n")
+        PrintStyle._logger.log(self.level, plain_text)
         PrintStyle.last_endline = True
 
     def stream(self, *args, sep=' ', **kwargs):
         self._add_padding_if_needed()
+        should_print = self._should_print()
         plain_text, styled_text, html_text = self.get(*args, sep=sep, **kwargs)
-        if not self.log_only:
+        if should_print:
             print(styled_text, end='', flush=True)
         self._log_html(html_text)
+        PrintStyle._logger.log(self.level, plain_text)
         PrintStyle.last_endline = False
 
     def is_last_line_empty(self):
@@ -119,31 +130,31 @@ class PrintStyle:
 
     @staticmethod
     def standard(text: str):
-        PrintStyle().print(text)
+        PrintStyle(level=logging.INFO).print(text)
 
     @staticmethod
     def hint(text: str):
-        PrintStyle(font_color="#6C3483", padding=True).print("Hint: "+text)
+        PrintStyle(font_color="#6C3483", padding=True, level=logging.INFO).print("Hint: "+text)
 
     @staticmethod
     def info(text: str):
-        PrintStyle(font_color="#0000FF", padding=True).print("Info: "+text)
+        PrintStyle(font_color="#0000FF", padding=True, level=logging.INFO).print("Info: "+text)
 
     @staticmethod
     def success(text: str):
-        PrintStyle(font_color="#008000", padding=True).print("Success: "+text)
+        PrintStyle(font_color="#008000", padding=True, level=logging.INFO).print("Success: "+text)
 
     @staticmethod
     def warning(text: str):
-        PrintStyle(font_color="#FFA500", padding=True).print("Warning: "+text)
+        PrintStyle(font_color="#FFA500", padding=True, level=logging.WARNING).print("Warning: "+text)
 
     @staticmethod
     def debug(text: str):
-        PrintStyle(font_color="#808080", padding=True).print("Debug: "+text)
+        PrintStyle(font_color="#808080", padding=True, level=logging.DEBUG).print("Debug: "+text)
 
     @staticmethod
     def error(text: str):
-        PrintStyle(font_color="red", padding=True).print("Error: "+text)
+        PrintStyle(font_color="red", padding=True, level=logging.ERROR).print("Error: "+text)
 
 # Ensure HTML file is closed properly when the program exits
 import atexit

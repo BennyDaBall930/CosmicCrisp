@@ -31,6 +31,8 @@ from python.helpers.mlx_server import MLXServerManager
 from python.models.apple_mlx_provider import MLXServerClient
 from pydantic import ConfigDict
 
+logger = logging.getLogger("a0.mlx_cache")
+
 from langchain_core.language_models.chat_models import SimpleChatModel
 from langchain_core.outputs.chat_generation import ChatGenerationChunk
 from langchain_core.callbacks.manager import (
@@ -77,9 +79,9 @@ class MLXCacheManager:
             with open(self.cache_file, 'w') as f:
                 json.dump(cache_data, f, indent=2)
 
-            print(f"[MLX Cache] Saved provider state for model: {model_path}")
+            logger.debug(f"Saved MLX provider state for model: {model_path}")
         except Exception as e:
-            print(f"[MLX Cache] Error saving cache: {e}")
+            logger.warning(f"Failed to save MLX cache: {e}")
 
     def load_provider_state(self, model_path: str) -> Optional[dict]:
         """Load provider state from persistent cache"""
@@ -93,21 +95,21 @@ class MLXCacheManager:
             # Validate cache key matches current model path
             expected_key = self._get_cache_key(model_path)
             if cache_data.get("cache_key") != expected_key:
-                print(f"[MLX Cache] Cache key mismatch for {model_path}, ignoring cache")
+                logger.debug(f"MLX cache key mismatch for {model_path}; ignoring cache")
                 return None
 
             # Check if models.py has been modified since cache was created
             current_mtime = os.path.getmtime(__file__) if os.path.exists(__file__) else 0
             cache_mtime = cache_data.get("timestamp", 0)
             if current_mtime > cache_mtime:
-                print(f"[MLX Cache] models.py modified since cache creation, ignoring cache")
+                logger.debug("models.py modified since cache creation; ignoring MLX cache")
                 return None
 
-            print(f"[MLX Cache] Loaded provider state for model: {model_path}")
+            logger.debug(f"Loaded MLX provider state for model: {model_path}")
             return cache_data.get("provider_state")
 
         except Exception as e:
-            print(f"[MLX Cache] Error loading cache: {e}")
+            logger.warning(f"Failed to load MLX cache: {e}")
             return None
 
     def clear_cache(self):
@@ -115,9 +117,9 @@ class MLXCacheManager:
         try:
             if self.cache_file.exists():
                 self.cache_file.unlink()
-                print("[MLX Cache] Cache cleared")
+                logger.debug("Cleared MLX cache")
         except Exception as e:
-            print(f"[MLX Cache] Error clearing cache: {e}")
+            logger.warning(f"Failed to clear MLX cache: {e}")
 
     def is_cache_valid(self, model_path: str) -> bool:
         """Check if cache exists and is valid for the given model path"""

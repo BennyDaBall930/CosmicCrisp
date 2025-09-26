@@ -45,11 +45,19 @@ def _configure_logging() -> Path:
     root_logger.setLevel(logging.DEBUG)
 
     file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
     stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(formatter)
+
+    class _SkipPrintStyleLogs(logging.Filter):
+        def filter(self, record):
+            return not getattr(record, "name", "").startswith("a0.print_style")
+
+    stream_handler.addFilter(_SkipPrintStyleLogs())
     root_logger.addHandler(stream_handler)
 
     logging.getLogger("werkzeug").setLevel(logging.INFO)

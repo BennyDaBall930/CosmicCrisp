@@ -6,6 +6,7 @@ import signal
 import time
 import json
 import socket
+import logging
 from typing import Optional, Dict, Any
 
 try:
@@ -16,7 +17,9 @@ except ImportError:
 
 from python.helpers.print_style import PrintStyle
 
-_PRINTER = PrintStyle(italic=True, font_color="blue", padding=False)
+_PRINTER_INFO = PrintStyle(italic=True, font_color="blue", padding=False, level=logging.DEBUG)
+_PRINTER_WARN = PrintStyle(font_color="#FFA500", padding=True, level=logging.WARNING)
+_PRINTER_ERROR = PrintStyle(font_color="red", padding=True, level=logging.ERROR)
 _INSTANCE: Optional['MLXServerManager'] = None
 
 
@@ -56,7 +59,7 @@ class MLXServerManager:
             with open(self._persistence_file, 'w') as f:
                 json.dump(state, f, indent=2)
         except Exception as e:
-            _PRINTER.print(f"[MLX Server] Error saving state: {e}")
+            _PRINTER_ERROR.print(f"[MLX Server] Error saving state: {e}")
 
     def _load_state(self, *, ignore_expiry: bool = False):
         """Load server state from persistent storage."""
@@ -74,7 +77,7 @@ class MLXServerManager:
 
             return state
         except Exception as e:
-            _PRINTER.print(f"[MLX Server] Error loading state: {e}")
+            _PRINTER_ERROR.print(f"[MLX Server] Error loading state: {e}")
             return None
 
     def _restore_state(self):
@@ -103,12 +106,12 @@ class MLXServerManager:
                         return None
 
                     self._process.poll = _poll  # type: ignore[assignment]
-                    _PRINTER.print(f"[MLX Server] Restored running server with PID: {pid}")
+                    _PRINTER_INFO.print(f"[MLX Server] Restored running server with PID: {pid}")
                 except (OSError, ProcessLookupError):
                     # Process no longer exists
                     self._status = "stopped"
                     self._process = None
-                    _PRINTER.print("[MLX Server] Previous server process no longer exists")
+                    _PRINTER_INFO.print("[MLX Server] Previous server process no longer exists")
 
     @classmethod
     def get_instance(cls) -> 'MLXServerManager':
@@ -177,7 +180,7 @@ class MLXServerManager:
                         self._status = "running"
                         self._process = None
                         self._save_state()
-                        _PRINTER.print(
+                        _PRINTER_INFO.print(
                             f"[MLX Server] Detected existing server on port {self._port}; "
                             "adopting unmanaged instance."
                         )
@@ -201,7 +204,7 @@ class MLXServerManager:
                     self._settings_path,
                 ]
 
-                _PRINTER.print(f"[MLX Server] Starting server with command: {' '.join(cmd)}")
+                _PRINTER_INFO.print(f"[MLX Server] Starting server with command: {' '.join(cmd)}")
 
                 # Start as subprocess with proper environment
                 env = os.environ.copy()
@@ -218,23 +221,23 @@ class MLXServerManager:
 
                 self._status = "starting"
                 self._save_state()
-                _PRINTER.print(f"[MLX Server] Server process started with PID: {self._process.pid}")
+                _PRINTER_INFO.print(f"[MLX Server] Server process started with PID: {self._process.pid}")
                 try:
                     self._external_pid_file.parent.mkdir(parents=True, exist_ok=True)
                     if self._process and self._process.pid:
                         self._external_pid_file.write_text(str(self._process.pid))
                 except Exception as e:
-                    _PRINTER.print(f"[MLX Server] Warning: unable to write PID file: {e}")
+                    _PRINTER_WARN.print(f"[MLX Server] Warning: unable to write PID file: {e}")
 
                 # Wait for server to start and model to load (MLX models can take time)
-                _PRINTER.print("[MLX Server] Waiting for server to initialize and load model...")
+                _PRINTER_INFO.print("[MLX Server] Waiting for server to initialize and load model...")
                 time.sleep(15)  # Increased from 2 to 15 seconds for MLX model loading
 
                 # Check if server is actually running by testing health endpoint
                 if self._check_server_health():
                     self._status = "running"
                     self._save_state()
-                    _PRINTER.print("[MLX Server] Server started successfully")
+                    _PRINTER_INFO.print("[MLX Server] Server started successfully")
                     return {"success": True, "message": "MLX server started successfully"}
                 else:
                     # Server didn't start properly, clean up
@@ -245,7 +248,7 @@ class MLXServerManager:
 
             except Exception as e:
                 self._status = "stopped"
-                _PRINTER.print(f"[MLX Server] Error starting server: {e}")
+                _PRINTER_ERROR.print(f"[MLX Server] Error starting server: {e}")
                 return {"success": False, "message": f"Failed to start MLX server: {str(e)}"}
 
     def stop_server(self) -> Dict[str, Any]:
@@ -260,7 +263,7 @@ class MLXServerManager:
                 return {"success": False, "message": "MLX server is not running"}
 
             try:
-                _PRINTER.print("[MLX Server] Stopping server...")
+                _PRINTER_INFO.print("[MLX Server] Stopping server...")
 
                 managed_process = self._process and self._process.poll() is None
                 target_pid: Optional[int] = None
@@ -277,7 +280,7 @@ class MLXServerManager:
                         pass  # Process might have already exited
 
                     if self._process and self._process.poll() is None:
-                        _PRINTER.print("[MLX Server] Force killing server process...")
+                        _PRINTER_WARN.print("[MLX Server] Force killing server process...")
                         try:
                             os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
                             self._process.wait(timeout=5)
@@ -287,12 +290,12 @@ class MLXServerManager:
                     target_pid = self._find_external_pid()
                     if target_pid is None:
                         message = "MLX server process is not managed and PID could not be determined"
-                        _PRINTER.print(f"[MLX Server] {message}")
+                        _PRINTER_WARN.print(f"[MLX Server] {message}")
                         return {"success": False, "message": message}
 
                     if not self._terminate_pid(target_pid):
                         message = f"Failed to terminate external MLX server process {target_pid}"
-                        _PRINTER.print(f"[MLX Server] {message}")
+                        _PRINTER_WARN.print(f"[MLX Server] {message}")
                         return {"success": False, "message": message}
 
                 if target_pid is not None:
@@ -302,17 +305,17 @@ class MLXServerManager:
                         time.sleep(1)
                     else:
                         message = f"Port {self._port} is still in use after stop attempt"
-                        _PRINTER.print(f"[MLX Server] {message}")
+                        _PRINTER_WARN.print(f"[MLX Server] {message}")
                         return {"success": False, "message": message}
 
                 self._cleanup_process()
                 self._status = "stopped"
                 self._save_state()
-                _PRINTER.print("[MLX Server] Server stopped successfully")
+                _PRINTER_INFO.print("[MLX Server] Server stopped successfully")
                 return {"success": True, "message": "MLX server stopped successfully"}
 
             except Exception as e:
-                _PRINTER.print(f"[MLX Server] Error stopping server: {e}")
+                _PRINTER_ERROR.print(f"[MLX Server] Error stopping server: {e}")
                 self._cleanup_process()
                 self._status = "stopped"
                 return {"success": False, "message": f"Error stopping MLX server: {str(e)}"}
