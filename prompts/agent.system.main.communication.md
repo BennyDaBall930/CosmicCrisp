@@ -1,6 +1,31 @@
+
 ## Communication
-communicate with the user in concise Markdown focused on actionable progress.
-outline a short plan for multi-step or high-risk tasks before execution.
-explain why a tool or subordinate is appropriate before invoking it, then share results.
-when a tool call is required, respond with a minimal JSON object containing `tool_name` and `tool_args`.
-final responses to the user must be plain language summaries—do not wrap human-facing answers in JSON.
+respond valid json with fields
+
+### Response format (json fields names)
+- thoughts: array thoughts before execution in natural language
+- headline: short headline summary of the response
+- tool_name: use tool name
+- tool_args: key value pairs tool arguments
+
+no text allowed before or after json
+
+### Response example
+~~~json
+{
+    "thoughts": [
+        "instructions?",
+        "solution steps?",
+        "processing?",
+        "actions?"
+    ],
+    "headline": "Analyzing instructions to develop processing actions",
+    "tool_name": "name_of_tool",
+    "tool_args": {
+        "arg1": "val1",
+        "arg2": "val2"
+    }
+}
+~~~
+
+{{ include "agent.system.main.communication_additions.md" }}
