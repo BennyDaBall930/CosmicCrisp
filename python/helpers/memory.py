@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, List, Sequence
+from typing import Any, List, Sequence, Tuple, Set
 from langchain.storage import InMemoryByteStore, LocalFileStore
 from langchain.embeddings import CacheBackedEmbeddings
 
@@ -154,6 +154,13 @@ class Memory:
                 relevance_score_fn=Memory._cosine_normalizer,
             )  # type: ignore
 
+            if db:
+                db, repaired = Memory._ensure_index_consistency(db, memory_subdir)
+                if repaired:
+                    PrintStyle.info(
+                        "Detected inconsistent memory index; rebuilt FAISS index from docstore."
+                    )
+
             # if there is a mismatch in embeddings used, re-index the whole DB
             emb_ok = False
             emb_set_file = files.get_abs_path(db_dir, "embedding.json")
@@ -300,13 +307,31 @@ class Memory:
     ):
         comparator = Memory._get_comparator(filter) if filter else None
 
-        return await self.db.asearch(
-            query,
-            search_type="similarity_score_threshold",
-            k=limit,
-            score_threshold=threshold,
-            filter=comparator,
-        )
+        try:
+            return await self.db.asearch(
+                query,
+                search_type="similarity_score_threshold",
+                k=limit,
+                score_threshold=threshold,
+                filter=comparator,
+            )
+        except ValueError as exc:
+            if "Could not find document for id" in str(exc):
+                PrintStyle.warning(
+                    "Stale memory reference detected during search; rebuilding index."
+                )
+                self.db, _ = Memory._ensure_index_consistency(
+                    self.db, self.memory_subdir, force=True
+                )
+                Memory.index[self.memory_subdir] = self.db
+                return await self.db.asearch(
+                    query,
+                    search_type="similarity_score_threshold",
+                    k=limit,
+                    score_threshold=threshold,
+                    filter=comparator,
+                )
+            raise
 
     async def delete_documents_by_query(
         self, query: str, threshold: float, filter: str = ""
@@ -382,6 +407,84 @@ class Memory:
     def _save_db_file(db: MyFaiss, memory_subdir: str):
         abs_dir = Memory._abs_db_dir(memory_subdir)
         db.save_local(folder_path=abs_dir)
+
+    @staticmethod
+    def _ensure_index_consistency(
+        db: MyFaiss, memory_subdir: str, force: bool = False
+    ) -> Tuple[MyFaiss, bool]:
+        missing, orphaned = Memory._detect_index_drift(db)
+        if not force and not missing and not orphaned:
+            return db, False
+
+        if missing or orphaned:
+            messages = []
+
+            def _fmt(label: str, values: Set[str]) -> str:
+                preview = sorted(values)
+                extra = ""
+                if len(preview) > 5:
+                    extra = f" (+{len(preview) - 5} more)"
+                    preview = preview[:5]
+                return f"{label} {preview}{extra}"
+
+            if missing:
+                messages.append(_fmt("missing documents", missing))
+            if orphaned:
+                messages.append(_fmt("orphaned documents", orphaned))
+
+            PrintStyle.warning(
+                "Repairing FAISS memory index: "
+                + ", ".join(messages)
+            )
+        else:
+            PrintStyle.warning("Rebuilding FAISS memory index (forced repair)")
+
+        new_db = Memory._rebuild_from_docstore(db, memory_subdir)
+        return new_db, True
+
+    @staticmethod
+    def _detect_index_drift(db: MyFaiss) -> Tuple[Set[str], Set[str]]:
+        docs_dict = db.get_all_docs()
+        doc_ids = set(docs_dict.keys())
+        index_ids = set(db.index_to_docstore_id.values())
+        missing = index_ids - doc_ids
+        orphaned = doc_ids - index_ids
+        return missing, orphaned
+
+    @staticmethod
+    def _rebuild_from_docstore(db: MyFaiss, memory_subdir: str) -> MyFaiss:
+        docs_dict = db.get_all_docs()
+        embedder = db.embedding_function
+        dimension = getattr(db.index, "d", None)
+        if dimension is None:
+            sample = embedder.embed_query("example")
+            dimension = len(sample)
+
+        rebuilt = MyFaiss(
+            embedding_function=embedder,
+            index=faiss.IndexFlatIP(dimension),
+            docstore=InMemoryDocstore(),
+            index_to_docstore_id={},
+            relevance_score_fn=db.override_relevance_score_fn,
+            normalize_L2=db._normalize_L2,
+            distance_strategy=db.distance_strategy,
+        )
+
+        ids: list[str] = []
+        docs: list[Document] = []
+        for doc_id, original in docs_dict.items():
+            metadata = dict(original.metadata)
+            metadata.setdefault("id", doc_id)
+            if not metadata.get("area"):
+                metadata["area"] = Memory.Area.MAIN.value
+            docs.append(Document(page_content=original.page_content, metadata=metadata))
+            ids.append(doc_id)
+
+        if docs:
+            rebuilt.add_documents(documents=docs, ids=ids)
+
+        Memory._save_db_file(rebuilt, memory_subdir)
+        return rebuilt
 
     @staticmethod
     def _get_comparator(condition: str):

@@ -495,7 +495,31 @@ class MemoryConsolidator:
             )
 
             # Parse LLM response
-            result_json = DirtyJson.parse_string(analysis_response.strip())
+            parse_attempts = 0
+            response_text = analysis_response.strip()
+            result_json = None
+            last_error: Exception | None = None
+
+            while parse_attempts < 2 and result_json is None:
+                try:
+                    result_json = DirtyJson.parse_string(response_text)
+                except Exception as parse_err:
+                    last_error = parse_err
+                    if parse_attempts == 0:
+                        start = response_text.find("{")
+                        end = response_text.rfind("}")
+                        if start != -1 and end != -1 and end > start:
+                            response_text = response_text[start : end + 1]
+                            parse_attempts += 1
+                            continue
+                    raise
+                else:
+                    break
+
+            if result_json is None:
+                if last_error:
+                    raise last_error
+                raise ValueError("LLM response is not a valid JSON object")
 
             if not isinstance(result_json, dict):
                 raise ValueError("LLM response is not a valid JSON object")
@@ -526,6 +550,12 @@ class MemoryConsolidator:
 
         except Exception as e:
             PrintStyle().warning(f"LLM consolidation analysis failed: {str(e)}")
+            preview = (analysis_response or "").strip()
+            if preview:
+                preview = preview.replace("\n", " ")
+                if len(preview) > 200:
+                    preview = preview[:200] + "…"
+                PrintStyle.debug(f"Consolidation response preview: {preview}")
             # Fallback: skip consolidation
             return ConsolidationResult(
                 action=ConsolidationAction.SKIP,
