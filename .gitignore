@@ -23,6 +23,7 @@ logs/*
 
 # Handle tmp directory
 tmp/*
+python/tmp/
 
 # Runtime supervisor state
 run/

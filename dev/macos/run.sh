@@ -124,6 +124,8 @@ SEARXNG_PORT_DEFAULT=8888
 MLX_PID_FILE="${PROJECT_DIR}/tmp/mlx.pid"
 MLX_TERM_ID_FILE="${PROJECT_DIR}/tmp/mlx.terminal.id"
 
+MLX_SERVER_SHOULD_WAIT=1
+
 mkdir -p "${PROJECT_DIR}/tmp"
 rm -f "$SEARXNG_PID_FILE" "$SEARXNG_TERM_ID_FILE" "$MLX_PID_FILE" "$MLX_TERM_ID_FILE"
 
@@ -324,6 +326,7 @@ start_mlx_server_terminal() {
     SETTINGS_PATH="${PROJECT_DIR}/tmp/settings.json"
     if [ ! -f "$SETTINGS_PATH" ]; then
         echo -e "${YELLOW}Settings file not found; skipping MLX server launch.${NC}"
+        MLX_SERVER_SHOULD_WAIT=0
         return 0
     fi
 
@@ -343,6 +346,7 @@ PY
 )
     if [ "$MLX_ENABLED" != "enabled" ]; then
         echo -e "${YELLOW}MLX server is disabled in settings; skipping launch.${NC}"
+        MLX_SERVER_SHOULD_WAIT=0
         return 0
     fi
 
@@ -597,6 +601,10 @@ wait_for_searxng() {
 }
 
 wait_for_mlx_server() {
+    if [ "${MLX_SERVER_SHOULD_WAIT:-1}" != "1" ]; then
+        echo -e "${YELLOW}Skipping MLX server readiness check (disabled in settings).${NC}"
+        return 0
+    fi
     local port=${MLX_PORT:-$(python3 -c "from python.helpers.settings import get_default_settings; print(get_default_settings()['mlx_server_port'])" 2>/dev/null || echo "8082")}
     echo -e "${GREEN}Waiting for MLX server to become ready on 127.0.0.1:${port}...${NC}"
     local attempts=300  # MLX models can take longer to load
