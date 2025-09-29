@@ -29,6 +29,7 @@ flask-basicauth==0.2.0
 flaredantic==0.1.4
 inputimeout==1.0.4
 chatterbox-tts
+TTS>=0.22.0,<0.23
 torchaudio==2.*
 simpleeval==1.0.3
 langchain-community
@@ -44,7 +45,6 @@ pypdf==4.3.1
 python-dotenv==1.1.0
 pytz==2024.2
 tiktoken==0.8.0
-mem0ai>=0.1.10
 unstructured[all-docs]==0.16.23
 unstructured-client==0.31.0
 webcolors==24.6.0

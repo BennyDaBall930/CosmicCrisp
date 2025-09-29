@@ -104,9 +104,8 @@ Apple Zero is highly configurable. Here's the beer-to-water ratio you need:
 OPENAI_API_KEY=your_key_here
 GEMINI_API_KEY=your_other_key
 
-# Memory (the long-term brain)
-MEM0_ENABLED=true  # For that extra storage
-MEM0_API_KEY=mem0_key
+# Memory (local SQLite store)
+MEMORY_DB_PATH=./data/runtime.sqlite
 
 # TTS Features (make it speak!)
 ENABLE_TTS=true
@@ -190,6 +189,16 @@ We ditched the old Kokoro TTS engine (rip) for Chatterbox. It's that good. Just 
 - **Fine-Grained Control**: Adjustable emotion intensity, CFG (classifier-free guidance), and device targeting
 - **Performance**: Optimized for both CPU and GPU acceleration (MPS, CUDA, CPU fallback)
 
+### Optional: Coqui XTTS
+
+Need a second voice profile or multilingual narration with speaker cloning? Switch the Speech settings tab to **Coqui XTTS**. XTTS runs locally using the [Coqui TTS](https://github.com/coqui-ai/TTS) models and supports:
+
+- Multilingual synthesis with per-utterance language codes (e.g. `en`, `es`, `fr`)
+- Built-in speaker presets (`female-en-5`, `male-de-4`, etc.)
+- Optional 5–10s reference clips for custom voice cloning (`speaker_wav_path`)
+
+All XTTS controls live in the UI (`Settings → Speech`), so no additional environment variables are required. Pick the model (`tts_models/multilingual/multi-dataset/xtts_v2` is the default), choose the device (`auto`, `cpu`, `mps`, `cuda`), and drop in a reference WAV if you want to mimic a specific voice.
+
 ### Configuration Options
 
 | Feature | Environment Variable | Default | Description |
@@ -231,6 +240,22 @@ join_silence_ms = 120 # Gap between chunks
 
 # Device targeting (auto-detects MPS/CUDA/CPU)
 # device = "auto"  # or "mps", "cuda", "cpu"
+```
+
+**Coqui XTTS (runtime.toml):**
+```toml
+[tts]
+engine = "xtts"
+
+[tts.xtts]
+model_id = "tts_models/multilingual/multi-dataset/xtts_v2"
+device = "auto"
+language = "en"
+speaker = "female-en-5"
+sample_rate = 24000
+max_chars = 400
+join_silence_ms = 80
+# speaker_wav_path = "./voices/custom.wav"  # Optional cloning reference
 ```
 
 **Multilingual Voices:**
@@ -292,7 +317,6 @@ Runtime configuration merges environment variables with an optional `runtime.tom
 | Key | Purpose | Example Overrides |
 | --- | --- | --- |
 | `EMBEDDINGS_PROVIDER`, `EMBEDDINGS_MODEL` | Configure embedding service (OpenAI, local LM Studio via LiteLLM) | `EMBEDDINGS_PROVIDER=openai`, `EMBEDDINGS_MODEL=text-embedding-3-large` |
-| `MEM0_ENABLED`, `MEM0_API_KEY`, `MEM0_BASE_URL` | Enable hybrid Mem0 retrieval alongside SQLite | `MEM0_ENABLED=true` |
 | `SUMMARIZER_MODEL`, `TOKEN_BUDGET_*` | Override default token budgets and summarizer model | `TOKEN_BUDGET_GPT_4O=196000` |
 | `ROUTER_DEFAULT_MODEL`, `ROUTER_MODELS` | Declare routing policies and capabilities | `ROUTER_MODELS='[{"name":"gpt-4o-mini","priority":1}]'` |
 | `HELICONE_ENABLED`, `HELICONE_BASE_URL`, `HELICONE_API_KEY` | Toggle Helicone proxy & observability headers | `HELICONE_ENABLED=true` |
@@ -306,7 +330,6 @@ model = "text-embedding-3-large"
 
 [memory]
 db_path = "./data/runtime.sqlite"
-mem0_enabled = false
 
 [tokens]
 summarizer_model = "gpt-4.1-mini"
@@ -331,25 +354,13 @@ metadata.api_base = "http://localhost:1234/v1"
 
 ## Memory & Context Management
 
-Apple Zero uses a composite memory stack (`python/runtime/memory`) combining a local SQLite+FAISS store with optional Mem0 hybrid retrieval.
+Apple Zero uses a local SQLite+FAISS store (`python/runtime/memory`) for semantic recall.
 
 | Provider | Model / Endpoint | Config Keys | Notes |
 | --- | --- | --- | --- |
 | OpenAI | `text-embedding-3-large` (default) | `EMBEDDINGS_PROVIDER=openai`, `EMBEDDINGS_MODEL=text-embedding-3-large` | High-quality embeddings, cached in `./tmp/embeddings.sqlite`. |
 | LiteLLM → LM Studio | Example `text-embedding-3-small` served by LM Studio | `EMBEDDINGS_PROVIDER=local_mlx`, `EMBEDDINGS_MODEL=lm-studio`, set `OPENAI_BASE_URL` to LM Studio server | Uses LiteLLM-compatible REST API. |
 | Null | Deterministic stub for tests | `EMBEDDINGS_PROVIDER=null` | Returns fixed vectors for offline testing. |
-
-### Mem0 Hybrid Retrieval
-
-Set the following to enable Mem0 alongside the local store:
-
-```env
-MEM0_ENABLED=true
-MEM0_API_KEY=your_mem0_token
-MEM0_BASE_URL=https://your-mem0-host
-```
-
-When enabled, the adapter merges remote results with the local SQLite store and defers reindex operations to the fallback store when possible.
 
 ### CLI Tools
 
@@ -452,7 +463,6 @@ python -m python.runtime.tools.reindex_memory --verbose
 | Purpose | Variable(s) |
 | --- | --- |
 | Memory location | `MEMORY_DB_PATH=./data/runtime.sqlite` |
-| Mem0 hybrid | `MEM0_ENABLED=true`, `MEM0_API_KEY=...`, `MEM0_BASE_URL=...` |
 | Router overrides | `ROUTER_MODELS`, `ROUTER_DEFAULT_MODEL`, `ROUTER_DEFAULT_STRATEGY` |
 | Token budgets | `TOKEN_BUDGETS`, `TOKEN_BUDGET_<MODEL>`, `SUMMARIZER_MODEL` |
 | UI flags | `AGENT_PERSONA`, `AGENT_MAX_LOOPS`, `AGENT_PLANNER_PROFILE` |
@@ -463,7 +473,7 @@ python -m python.runtime.tools.reindex_memory --verbose
 A focused runtime test suite lives under `tests/runtime/`:
 
 - `test_embeddings_cache.py` – cache hit/miss and batching behaviour
-- `test_memory_recall.py` – FAISS similarity and Mem0 fallback
+- `test_memory_recall.py` – FAISS similarity and fallback handling
 - `test_token_fit.py` – budget trimming and summarisation
 - `test_loop_integration.py` – orchestration loop integration
 - `test_tool_browser.py` – browser-use retries and human-in-loop escalation

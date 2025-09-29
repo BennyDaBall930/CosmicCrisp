@@ -29,6 +29,7 @@ flask-basicauth==0.2.0
 flaredantic==0.1.4
 inputimeout==1.0.4
 chatterbox-tts
+TTS>=0.22.0,<0.23
 torchaudio==2.*
 simpleeval==1.0.3
 langchain-community

@@ -4,6 +4,7 @@ import os
 import logging
 from python.helpers import runtime, whisper, settings
 from python.helpers.chatterbox_tts import config_from_dict, get_backend
+from python.helpers.xtts_tts import config_from_dict as xtts_config_from_dict, get_backend as get_xtts_backend
 from python.helpers.print_style import PrintStyle
 import models
 
@@ -46,6 +47,20 @@ async def preload():
             except Exception as e:
                 PrintStyle().error(f"Error in preload_chatterbox: {e}")
 
+        async def preload_xtts():
+            try:
+                tts_settings = current.get("tts", {}) if isinstance(current, dict) else {}
+                if not isinstance(tts_settings, dict):
+                    return
+                if tts_settings.get("engine") != "xtts":
+                    return
+                cfg_map = tts_settings.get("xtts")
+                cfg = xtts_config_from_dict(cfg_map if isinstance(cfg_map, dict) else {})
+                await asyncio.to_thread(get_xtts_backend, cfg)
+                PrintStyle(level=logging.DEBUG).print("XTTS backend warmed up")
+            except Exception as e:
+                PrintStyle().error(f"Error in preload_xtts: {e}")
+
         async def preload_mlx():
             try:
                 # Check if MLX server is enabled in settings
@@ -78,6 +93,7 @@ async def preload():
             preload_embedding(),
             # preload_whisper(),
             preload_chatterbox(),
+            preload_xtts(),
             preload_mlx(),
         ]
 

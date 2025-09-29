@@ -1,60 +1,83 @@
 import logging
 import time
 
+import torch
 from flask import Response, stream_with_context
 
 from python.helpers.api import ApiHandler, Request
 from python.helpers import settings
 from python.helpers.chatterbox_tts import (
     ChatterboxConfig,
-    config_from_dict,
-    get_backend,
+    config_from_dict as chatterbox_config_from_dict,
+    get_backend as get_chatterbox_backend,
     wav_header,
+)
+from python.helpers.xtts_tts import (
+    XTTSConfig,
+    config_from_dict as xtts_config_from_dict,
+    get_backend as get_xtts_backend,
+    wav_header as xtts_wav_header,
 )
 
 logger = logging.getLogger(__name__)
 
-_backend = None
 
-
-def _chatterbox_settings() -> ChatterboxConfig:
+def _tts_settings() -> dict:
     all_settings = settings.get_settings()
     tts_settings = all_settings.get("tts")
     if not isinstance(tts_settings, dict):
         tts_settings = settings.get_default_settings()["tts"]
+    return tts_settings
+
+
+def _chatterbox_settings(tts_settings: dict) -> ChatterboxConfig:
     chatterbox = tts_settings.get("chatterbox")
     if not isinstance(chatterbox, dict):
         chatterbox = settings.get_default_settings()["tts"]["chatterbox"]
-    return config_from_dict(chatterbox)
+    return chatterbox_config_from_dict(chatterbox)
 
 
-def _ensure_backend():
-    global _backend
-    cfg = _chatterbox_settings()
-    if _backend is None or _backend.cfg != cfg:
-        logger.info(
-            "synthesize_stream backend refresh",
-            extra={
-                "cache_hit": _backend is not None,
-                "device": cfg.device,
-                "multilingual": cfg.multilingual,
-            },
-        )
-        _backend = get_backend(cfg)
-    return _backend
+def _xtts_settings(tts_settings: dict) -> XTTSConfig:
+    xtts = tts_settings.get("xtts")
+    if not isinstance(xtts, dict):
+        xtts = settings.get_default_settings()["tts"]["xtts"]
+    return xtts_config_from_dict(xtts)
+
+
+def _gap_bytes(sample_rate: int, join_ms: int) -> bytes:
+    if join_ms <= 0:
+        return b""
+    samples = int(sample_rate * join_ms / 1000)
+    if samples <= 0:
+        return b""
+    silence = torch.zeros(samples, dtype=torch.float32)
+    return (silence * 32767.0).to(torch.int16).numpy().tobytes()
 
 
 class SynthesizeStream(ApiHandler):
     async def process(self, input: dict, request: Request) -> Response:
-        backend = _ensure_backend()
         text = input.get("text", "")
-        style = input.get("style", {}) or {}
-        target_chars = int(input.get("target_chars", backend.cfg.max_chars))
-        join_ms = int(input.get("join_silence_ms", backend.cfg.join_silence_ms))
-        first_chunk_chars = int(input.get("first_chunk_chars", 0) or 0)
-
         if not isinstance(text, str) or not text.strip():
             return Response("text is empty", status=400, mimetype="text/plain")
+
+        tts_settings = _tts_settings()
+        engine = str(tts_settings.get("engine", "chatterbox")).lower()
+        style = input.get("style", {}) or {}
+        filtered_style = {k: v for k, v in style.items() if v is not None}
+
+        if engine == "browser":
+            return Response("browser TTS engine does not support server streaming", status=400, mimetype="text/plain")
+
+        if engine == "xtts":
+            return self._stream_xtts(text, filtered_style, input, tts_settings)
+
+        return self._stream_chatterbox(text, filtered_style, input, tts_settings)
+
+    def _stream_chatterbox(self, text: str, style: dict, payload: dict, tts_settings: dict) -> Response:
+        backend = get_chatterbox_backend(_chatterbox_settings(tts_settings))
+        target_chars = int(payload.get("target_chars", backend.cfg.max_chars))
+        join_ms = int(payload.get("join_silence_ms", backend.cfg.join_silence_ms))
+        first_chunk_chars = int(payload.get("first_chunk_chars", 0) or 0)
 
         exaggeration = float(style.get("exaggeration", backend.cfg.exaggeration))
         cfg = float(style.get("cfg", backend.cfg.cfg))
@@ -68,7 +91,7 @@ class SynthesizeStream(ApiHandler):
         bytes_sent = 0
         logger.info(
             (
-                "synthesize_stream request text_len=%d target_chars=%d join_ms=%d "
+                "synthesize_stream request (chatterbox) text_len=%d target_chars=%d join_ms=%d "
                 "first_chunk=%d language=%s"
             ),
             len(text),
@@ -119,6 +142,69 @@ class SynthesizeStream(ApiHandler):
                 logger.info(
                     (
                         "synthesize_stream complete text_len=%d chunks=%d bytes=%d duration_ms=%d"
+                    ),
+                    len(text),
+                    chunk_count,
+                    bytes_sent,
+                    total_ms,
+                )
+
+        return Response(stream_with_context(generator()), mimetype="audio/wav")
+
+    def _stream_xtts(self, text: str, style: dict, payload: dict, tts_settings: dict) -> Response:
+        backend = get_xtts_backend(_xtts_settings(tts_settings))
+        join_ms = int(payload.get("join_silence_ms", backend.cfg.join_silence_ms))
+        target_chars = int(payload.get("target_chars", backend.cfg.max_chars))
+
+        speaker = style.get("speaker") or backend.cfg.speaker
+        language = style.get("language") or backend.cfg.language
+        speaker_wav_path = style.get("speaker_wav_path") or backend.cfg.speaker_wav_path
+
+        sr = getattr(backend, "sample_rate", backend.cfg.sample_rate)
+
+        start_time = time.perf_counter()
+        chunk_count = 0
+        bytes_sent = 0
+        logger.info(
+            "synthesize_stream request (xtts) text_len=%d join_ms=%d",
+            len(text),
+            join_ms,
+        )
+
+        def generator():
+            nonlocal chunk_count, bytes_sent
+            try:
+                header = xtts_wav_header(sr, channels=1, bits_per_sample=16, data_bytes=None)
+                bytes_sent += len(header)
+                yield header
+                for block in backend.stream_chunks(
+                    text,
+                    speaker=speaker,
+                    language=language,
+                    speaker_wav_path=speaker_wav_path,
+                    max_chars=target_chars,
+                    join_silence_ms=join_ms,
+                ):
+                    if not block:
+                        continue
+                    chunk_count += 1
+                    bytes_sent += len(block)
+                    logger.debug(
+                        "synthesize_stream chunk index=%d bytes=%d total_bytes=%d",
+                        chunk_count,
+                        len(block),
+                        bytes_sent,
+                    )
+                    yield block
+            except Exception:
+                logger.exception("synthesize_stream generator error")
+                raise
+            finally:
+                backend.cleanup()
+                total_ms = int((time.perf_counter() - start_time) * 1000)
+                logger.info(
+                    (
+                        "synthesize_stream complete (xtts) text_len=%d chunks=%d bytes=%d duration_ms=%d"
                     ),
                     len(text),
                     chunk_count,

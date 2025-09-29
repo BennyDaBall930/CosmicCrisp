@@ -44,6 +44,15 @@ const model = {
   tts_chatterbox_max_chars: 600,
   tts_chatterbox_join_silence_ms: 120,
 
+  tts_xtts_model_id: "tts_models/multilingual/multi-dataset/xtts_v2",
+  tts_xtts_device: "auto",
+  tts_xtts_language: "en",
+  tts_xtts_speaker: "",
+  tts_xtts_speaker_wav_path: "",
+  tts_xtts_sample_rate: 24000,
+  tts_xtts_max_chars: 400,
+  tts_xtts_join_silence_ms: 80,
+
   // TTS State
   isSpeaking: false,
   speakingId: "",
@@ -68,6 +77,14 @@ const model = {
 
   get ttsIsChatterbox() {
     return (this.tts_engine || "").toLowerCase() === "chatterbox";
+  },
+
+  get ttsIsXTTS() {
+    return (this.tts_engine || "").toLowerCase() === "xtts";
+  },
+
+  get ttsUsesServerBackend() {
+    return this.ttsIsChatterbox || this.ttsIsXTTS;
   },
 
   updateMicrophoneButtonUI() {
@@ -208,7 +225,7 @@ const model = {
       this.ttsStream.text = text;
     }
 
-    const useChatterbox = this.ttsIsChatterbox;
+    const useServerTTS = this.ttsUsesServerBackend;
 
     // cleanup text
     const cleanText = this.cleanText(text);
@@ -216,15 +233,15 @@ const model = {
 
     // For streaming TTS we wait until the response is complete so we can hand
     // the full text to the backend and let it manage the chunking/streaming.
-    if (useChatterbox && !finished) {
-      ttsLog("defer chatterbox playback until completion", {
+    if (useServerTTS && !finished) {
+      ttsLog("defer server playback until completion", {
         textLen: cleanText.length,
       });
       return;
     }
 
-    // chunk it for faster processing (browser speech) or send whole payload (chatterbox)
-    this.ttsStream.chunks = useChatterbox
+    // chunk it for faster processing (browser speech) or send whole payload (server)
+    this.ttsStream.chunks = useServerTTS
       ? [cleanText]
       : this.chunkText(cleanText);
     if (this.ttsStream.chunks.length == 0) return;
@@ -269,17 +286,29 @@ const model = {
 
   // speak wrapper
   async _speak(text, waitForPrevious, terminator) {
-    // default browser speech
-    if (!this.ttsIsChatterbox)
-      return await this.speakWithBrowser(text, waitForPrevious, terminator);
+    const engine = (this.tts_engine || "").toLowerCase();
 
-    // server TTS
-    try {
-      await this.speakWithChatterbox(text, waitForPrevious, terminator);
-    } catch (error) {
-      console.error(error);
-      return await this.speakWithBrowser(text, waitForPrevious, terminator);
+    if (engine === "chatterbox") {
+      try {
+        await this.speakWithChatterbox(text, waitForPrevious, terminator);
+        return;
+      } catch (error) {
+        console.error(error);
+        return await this.speakWithBrowser(text, waitForPrevious, terminator);
+      }
     }
+
+    if (engine === "xtts") {
+      try {
+        await this.speakWithXTTS(text, waitForPrevious, terminator);
+        return;
+      } catch (error) {
+        console.error(error);
+        return await this.speakWithBrowser(text, waitForPrevious, terminator);
+      }
+    }
+
+    return await this.speakWithBrowser(text, waitForPrevious, terminator);
   },
 
   chunkText(text, { maxChunkLength = 135, lineSeparator = "..." } = {}) {
@@ -454,6 +483,7 @@ const model = {
         joinMs,
         sampleRate: 24000,
         firstChunkChars,
+        engine: "chatterbox",
       });
       ttsLog("stream handler created", { hasStream: Boolean(stream) });
 
@@ -504,6 +534,88 @@ const model = {
     }
   },
 
+  async speakWithXTTS(text, waitForPrevious = false, terminator = null) {
+    try {
+      ttsLog("speakWithXTTS start", {
+        textLen: text ? text.length : 0,
+        waitForPrevious,
+        hasTerminator: Boolean(terminator),
+      });
+      while (waitForPrevious && this.isSpeaking) await sleep(25);
+      if (terminator && terminator()) return;
+
+      this.stopAudio();
+      ttsLog("audio stopped");
+
+      const style = this._buildXTTSStyle();
+      const targetChars = Math.max(
+        80,
+        Math.min(this.tts_xtts_max_chars || 200, 600)
+      );
+      const joinMs = Math.max(0, this.tts_xtts_join_silence_ms ?? 5);
+      const sampleRate = this._parseNumber(this.tts_xtts_sample_rate, 24000);
+      const firstChunkChars = 0;
+
+      this.isSpeaking = true;
+
+      const stream = await playStreamedTTS({
+        text,
+        style,
+        targetChars,
+        joinMs,
+        sampleRate,
+        firstChunkChars,
+        engine: "xtts",
+      });
+      ttsLog("stream handler created", { hasStream: Boolean(stream) });
+
+      if (!stream) {
+        this.isSpeaking = false;
+        return;
+      }
+
+      if (terminator && terminator()) {
+        ttsLog("terminator triggered");
+        await stream.stop();
+        this.isSpeaking = false;
+        return;
+      }
+
+      this.activeStream = stream;
+
+      stream.finished
+        .then(({ totalSamples, aborted }) => {
+          if (this.activeStream !== stream) return;
+          ttsLog("stream finished event", { totalSamples, aborted });
+          if (aborted) {
+            this.activeStream = null;
+            this.isSpeaking = false;
+            return;
+          }
+          const durationMs = (totalSamples / sampleRate) * 1000;
+          setTimeout(() => {
+            if (this.activeStream === stream) {
+              this.activeStream = null;
+              this.isSpeaking = false;
+              ttsLog("stream playback window elapsed", { durationMs });
+            }
+          }, Math.max(0, durationMs) + 50);
+        })
+        .catch((error) => {
+          if (this.activeStream === stream) {
+            this.activeStream = null;
+            this.isSpeaking = false;
+          }
+          ttsLog("stream finished with error", { message: error?.message });
+          console.error("XTTS stream error", error);
+        });
+    } catch (error) {
+      this.activeStream = null;
+      this.isSpeaking = false;
+      throw error;
+    }
+  },
+
   _buildChatterboxStyle() {
     const style = {
       exaggeration: this._parseNumber(this.tts_chatterbox_exaggeration, 0.5),
@@ -518,6 +630,20 @@ const model = {
       const lang = (this.tts_chatterbox_language_id || "").trim();
       if (lang) style.language_id = lang;
     }
+
+    return style;
+  },
+
+  _buildXTTSStyle() {
+    const style = {
+      language: (this.tts_xtts_language || "en").trim() || "en",
+    };
+
+    const speaker = (this.tts_xtts_speaker || "").trim();
+    if (speaker) style.speaker = speaker;
+
+    const promptPath = (this.tts_xtts_speaker_wav_path || "").trim();
+    if (promptPath) style.speaker_wav_path = promptPath;
 
     return style;
   },

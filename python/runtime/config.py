@@ -47,7 +47,6 @@ class EmbeddingsConfig:
 class MemoryConfig:
     db_path: Path = Path("./tmp/memory.sqlite")
     top_k: int = 6
-    mem0_enabled: bool = False
     summarize_overflow: bool = True
 
 
@@ -345,13 +344,6 @@ def load_runtime_config() -> RuntimeConfig:
                 _lookup(settings, "memory", "top_k", default=6),
             ),
             6,
-        ),
-        mem0_enabled=_as_bool(
-            env.get(
-                "MEM0_ENABLED",
-                _lookup(settings, "memory", "mem0_enabled", default=False),
-            ),
-            False,
         ),
         summarize_overflow=_as_bool(
             env.get(

@@ -1,5 +1,3 @@
-"""Additional memory stores."""
+"""Additional memory stores namespace."""
 
-from .mem0_adapter import Mem0Adapter
-
-__all__ = ["Mem0Adapter"]
+__all__: list[str] = []

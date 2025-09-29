@@ -15,6 +15,7 @@ export async function playStreamedTTS({
   joinMs = 5,
   sampleRate = 24000,
   firstChunkChars = 0,
+  engine = "chatterbox",
   endpoint = "/synthesize_stream",
 }) {
   if (!text || !text.trim()) return null;
@@ -209,6 +210,7 @@ export async function playStreamedTTS({
     target_chars: targetChars,
     join_silence_ms: joinMs,
     first_chunk_chars: firstChunkChars || undefined,
+    engine,
   };
 
   const doFetch = (path, options) => (typeof fetchApi === "function" ? fetchApi(path, options) : fetch(path, options));

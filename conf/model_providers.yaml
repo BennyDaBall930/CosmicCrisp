@@ -109,3 +109,11 @@ embedding:
   other:
     name: Other OpenAI compatible
     litellm_provider: openai
+
+tts:
+  chatterbox:
+    name: Chatterbox
+    type: local
+  xtts:
+    name: Coqui XTTS
+    type: local

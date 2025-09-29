@@ -25,9 +25,21 @@ class ChatterboxSettings(TypedDict, total=False):
     join_silence_ms: int
 
 
+class XTTSSettings(TypedDict, total=False):
+    model_id: str
+    device: Optional[str]
+    speaker: Optional[str]
+    language: Optional[str]
+    speaker_wav_path: Optional[str]
+    sample_rate: int
+    max_chars: int
+    join_silence_ms: int
+
+
 class TTSSettings(TypedDict):
-    engine: Literal["chatterbox"]
+    engine: Literal["chatterbox", "xtts", "browser"]
     chatterbox: ChatterboxSettings
+    xtts: XTTSSettings
 
 
 class Settings(TypedDict):
@@ -1018,15 +1030,22 @@ def convert_out(settings: Settings) -> SettingsOutput:
     # TTS fields
     tts_settings = settings["tts"]
     chatterbox_settings = tts_settings["chatterbox"]
+    xtts_settings = tts_settings["xtts"]
+    current_engine = str(tts_settings.get("engine", "chatterbox"))
+    show_chatterbox = current_engine == "chatterbox"
+    show_xtts = current_engine == "xtts"
+
     tts_fields: list[SettingsField] = [
         {
             "id": "tts_engine",
             "title": "TTS engine",
             "description": "Select the Text-to-Speech engine.",
             "type": "select",
-            "value": tts_settings.get("engine", "chatterbox"),
+            "value": current_engine,
             "options": [
                 {"value": "chatterbox", "label": "Chatterbox"},
+                {"value": "xtts", "label": "Coqui XTTS"},
+                {"value": "browser", "label": "Browser"},
             ],
         },
         {
@@ -1041,6 +1060,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
                 {"value": "cuda", "label": "CUDA"},
                 {"value": "cpu", "label": "CPU"},
             ],
+            "hidden": not show_chatterbox,
         },
         {
             "id": "tts_chatterbox_multilingual",
@@ -1048,6 +1068,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "description": "Enable the multilingual checkpoint (23 supported languages).",
             "type": "switch",
             "value": chatterbox_settings.get("multilingual", False),
+            "hidden": not show_chatterbox,
         },
         {
             "id": "tts_chatterbox_language_id",
@@ -1055,6 +1076,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "description": "Language code used when multilingual mode is enabled (e.g. en, fr, zh).",
             "type": "text",
             "value": chatterbox_settings.get("language_id", "en"),
+            "hidden": not show_chatterbox,
         },
         {
             "id": "tts_chatterbox_exaggeration",
@@ -1065,6 +1087,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "max": 1,
             "step": 0.05,
             "value": chatterbox_settings.get("exaggeration", 0.5),
+            "hidden": not show_chatterbox,
         },
         {
             "id": "tts_chatterbox_cfg",
@@ -1075,6 +1098,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "max": 1,
             "step": 0.05,
             "value": chatterbox_settings.get("cfg", 0.5),
+            "hidden": not show_chatterbox,
         },
         {
             "id": "tts_chatterbox_audio_prompt_path",
@@ -1082,6 +1106,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "description": "Optional 7-20s reference clip for zero-shot voice cloning.",
             "type": "text",
             "value": chatterbox_settings.get("audio_prompt_path") or "",
+            "hidden": not show_chatterbox,
         },
         {
             "id": "tts_chatterbox_max_chars",
@@ -1089,6 +1114,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "description": "Maximum characters per generation chunk.",
             "type": "number",
             "value": chatterbox_settings.get("max_chars", 600),
+            "hidden": not show_chatterbox,
         },
         {
             "id": "tts_chatterbox_join_silence_ms",
@@ -1096,8 +1122,90 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "description": "Silence inserted between concatenated chunks.",
             "type": "number",
             "value": chatterbox_settings.get("join_silence_ms", 120),
+            "hidden": not show_chatterbox,
+        },
+        {
+            "id": "tts_xtts_model_id",
+            "title": "XTTS model",
+            "description": "Coqui model identifier or local checkpoint path.",
+            "type": "text",
+            "value": xtts_settings.get("model_id", "tts_models/multilingual/multi-dataset/xtts_v2"),
+            "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_xtts_device",
+            "title": "XTTS device",
+            "description": "Preferred device (auto chooses the best available).",
+            "type": "select",
+            "value": xtts_settings.get("device") or "auto",
+            "options": [
+                {"value": "auto", "label": "Auto"},
+                {"value": "cuda", "label": "CUDA"},
+                {"value": "mps", "label": "Apple GPU (MPS)"},
+                {"value": "cpu", "label": "CPU"},
+            ],
+            "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_xtts_language",
+            "title": "Language",
+            "description": "ISO language code used during synthesis (e.g. en, es, fr).",
+            "type": "text",
+            "value": xtts_settings.get("language", "en"),
+            "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_xtts_speaker",
+            "title": "Speaker preset",
+            "description": "Optional built-in speaker ID (e.g. female-en-5). Leave empty for default voice.",
+            "type": "text",
+            "value": xtts_settings.get("speaker") or "",
+            "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_xtts_speaker_wav_path",
+            "title": "Reference voice path",
+            "description": "Optional reference audio (5–10s) to clone a custom voice.",
+            "type": "text",
+            "value": xtts_settings.get("speaker_wav_path") or "",
+            "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_xtts_sample_rate",
+            "title": "Output sample rate",
+            "description": "Sample rate for generated audio (default 24000).",
+            "type": "number",
+            "value": xtts_settings.get("sample_rate", 24000),
+            "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_xtts_max_chars",
+            "title": "Chunk size (characters)",
+            "description": "Maximum characters per synthesis request.",
+            "type": "number",
+            "value": xtts_settings.get("max_chars", 400),
+            "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_xtts_join_silence_ms",
+            "title": "Join gap (ms)",
+            "description": "Silence inserted between concatenated chunks when streaming.",
+            "type": "number",
+            "value": xtts_settings.get("join_silence_ms", 80),
+            "hidden": not show_xtts,
         },
     ]
+
+    if current_engine == "browser":
+        tts_fields.append(
+            {
+                "id": "tts_browser_info",
+                "title": "Browser speech synthesis",
+                "description": "Uses the local browser voices. Configure voices in your OS/browser settings.",
+                "type": "html",
+                "value": "Browser mode delegates speech to the user's device.",
+            }
+        )
 
     speech_section: SettingsSection = {
         "id": "speech",
@@ -1473,10 +1581,14 @@ def convert_in(settings: dict) -> Settings:
 def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None:
     default_tts = get_default_settings()["tts"]
     current_tts = settings_dict.get("tts") or {}
-    merged_tts: dict[str, Any] = {"engine": default_tts["engine"],
-                                 "chatterbox": {**default_tts["chatterbox"]}}
+    merged_tts: dict[str, Any] = {
+        "engine": default_tts["engine"],
+        "chatterbox": {**default_tts["chatterbox"]},
+        "xtts": {**default_tts["xtts"]},
+    }
     merged_tts.update(current_tts)
     chatterbox = {**merged_tts.get("chatterbox", {})}
+    xtts_settings = {**merged_tts.get("xtts", {})}
 
     if field_id == "tts_engine":
         merged_tts["engine"] = value or default_tts["engine"]
@@ -1484,6 +1596,10 @@ def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None
         key = field_id.removeprefix("tts_chatterbox_")
         chatterbox[key] = value
         merged_tts["chatterbox"] = chatterbox
+    elif field_id.startswith("tts_xtts_"):
+        key = field_id.removeprefix("tts_xtts_")
+        xtts_settings[key] = value
+        merged_tts["xtts"] = xtts_settings
 
     settings_dict["tts"] = merged_tts  # type: ignore
 
@@ -1581,6 +1697,36 @@ def _normalize_tts_settings(value: dict[str, Any], default: dict[str, Any]) -> d
         normalized_cb[key] = raw if raw is not None else default_val
 
     result["chatterbox"] = normalized_cb
+
+    default_xtts = default.get("xtts", {})
+    incoming_xtts = {}
+    if isinstance(value, dict):
+        incoming_xtts = value.get("xtts", {}) if isinstance(value.get("xtts"), dict) else {}
+
+    normalized_xtts: dict[str, Any] = {}
+    for key, default_val in default_xtts.items():
+        raw = incoming_xtts.get(key, default_val)
+        if key == "device":
+            normalized_xtts[key] = None if raw in (None, "", "auto") else str(raw)
+            continue
+        if key in {"speaker", "language"}:
+            normalized_xtts[key] = str(raw).strip() if raw else (default_val or None)
+            continue
+        if key == "speaker_wav_path":
+            normalized_xtts[key] = (str(raw).strip() if isinstance(raw, str) else raw) or None
+            continue
+        if key == "model_id":
+            normalized_xtts[key] = str(raw or default_val)
+            continue
+        if isinstance(default_val, int) and type(default_val) is not bool:
+            normalized_xtts[key] = _parse_int(raw, default_val)
+            continue
+        if isinstance(default_val, float):
+            normalized_xtts[key] = _parse_float(raw, default_val)
+            continue
+        normalized_xtts[key] = raw if raw is not None else default_val
+
+    result["xtts"] = normalized_xtts
     return result
 
 
@@ -1754,6 +1900,16 @@ def get_default_settings() -> Settings:
                 "language_id": "en",
                 "max_chars": 600,
                 "join_silence_ms": 120,
+            },
+            "xtts": {
+                "model_id": "tts_models/multilingual/multi-dataset/xtts_v2",
+                "device": None,
+                "speaker": None,
+                "language": "en",
+                "speaker_wav_path": None,
+                "sample_rate": 24_000,
+                "max_chars": 400,
+                "join_silence_ms": 80,
             },
         },
         mcp_servers='{\n    "mcpServers": {}\n}',

@@ -76,7 +76,6 @@ python -m python.runtime.api.app
 Use `open http://localhost:8080` to reach the UI when running `./dev/macos/run.sh`, or connect to the FastAPI server via the CLI scripts under `run/`.
 
 ## Optional Integrations
-- **Mem0 Hybrid Memory:** set `MEM0_ENABLED=true`, `MEM0_API_KEY`, and `MEM0_BASE_URL` to merge remote recall with the local SQLite store. Rebuild local vectors with `python -m python.runtime.tools.reindex_memory` after large imports.
 - **Chrome Remote Debugging:** export `A0_CHROME_EXECUTABLE` and `A0_CHROME_DEBUG_PORT` before calling `run.sh` if you need a specific Chrome build for the browser tool.
 - **Observability:** set `HELICONE_ENABLED=true` plus `HELICONE_*` keys to forward telemetry. Logs land in `./logs/runtime_observability.jsonl`; Prometheus metrics are exposed at `/runtime/admin/metrics`.
 
