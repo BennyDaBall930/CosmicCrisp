@@ -3,8 +3,6 @@ import subprocess
 import os
 import logging
 from python.helpers import runtime, whisper, settings
-from python.helpers.chatterbox_tts import config_from_dict, get_backend
-from python.helpers.xtts_tts import config_from_dict as xtts_config_from_dict, get_backend as get_xtts_backend
 from python.helpers.print_style import PrintStyle
 import models
 
@@ -40,9 +38,10 @@ async def preload():
                     return
                 if tts_settings.get("engine") != "chatterbox":
                     return
+                from python.helpers.chatterbox_tts import config_from_dict as _cfg, get_backend as _get
                 cfg_map = tts_settings.get("chatterbox")
-                cfg = config_from_dict(cfg_map if isinstance(cfg_map, dict) else {})
-                await asyncio.to_thread(get_backend, cfg)
+                cfg = _cfg(cfg_map if isinstance(cfg_map, dict) else {})
+                await asyncio.to_thread(_get, cfg)
                 PrintStyle(level=logging.DEBUG).print("Chatterbox backend warmed up")
             except Exception as e:
                 PrintStyle().error(f"Error in preload_chatterbox: {e}")
@@ -54,9 +53,10 @@ async def preload():
                     return
                 if tts_settings.get("engine") != "xtts":
                     return
+                from python.helpers.xtts_tts import config_from_dict as _cfg, get_backend as _get
                 cfg_map = tts_settings.get("xtts")
-                cfg = xtts_config_from_dict(cfg_map if isinstance(cfg_map, dict) else {})
-                await asyncio.to_thread(get_xtts_backend, cfg)
+                cfg = _cfg(cfg_map if isinstance(cfg_map, dict) else {})
+                await asyncio.to_thread(_get, cfg)
                 PrintStyle(level=logging.DEBUG).print("XTTS backend warmed up")
             except Exception as e:
                 PrintStyle().error(f"Error in preload_xtts: {e}")

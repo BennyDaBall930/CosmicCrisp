@@ -3,16 +3,7 @@
 from python.helpers.api import ApiHandler, Request, Response
 
 from python.helpers import settings
-from python.helpers.chatterbox_tts import (
-    ChatterboxConfig,
-    config_from_dict as chatterbox_config_from_dict,
-    synthesize_base64 as chatterbox_synthesize_base64,
-)
-from python.helpers.xtts_tts import (
-    XTTSConfig,
-    config_from_dict as xtts_config_from_dict,
-    synthesize_base64 as xtts_synthesize_base64,
-)
+from typing import Optional
 
 
 def _tts_settings() -> dict:
@@ -23,18 +14,20 @@ def _tts_settings() -> dict:
     return tts_settings
 
 
-def _chatterbox_settings(tts_settings: dict) -> ChatterboxConfig:
+def _chatterbox_settings(tts_settings: dict):
+    from python.helpers.chatterbox_tts import config_from_dict as _cfg
     chatterbox = tts_settings.get("chatterbox")
     if not isinstance(chatterbox, dict):
         chatterbox = settings.get_default_settings()["tts"]["chatterbox"]
-    return chatterbox_config_from_dict(chatterbox)
+    return _cfg(chatterbox)
 
 
-def _xtts_settings(tts_settings: dict) -> XTTSConfig:
+def _xtts_settings(tts_settings: dict):
+    from python.helpers.xtts_tts import config_from_dict as _cfg
     xtts = tts_settings.get("xtts")
     if not isinstance(xtts, dict):
         xtts = settings.get_default_settings()["tts"]["xtts"]
-    return xtts_config_from_dict(xtts)
+    return _cfg(xtts)
 
 
 class Synthesize(ApiHandler):
@@ -46,19 +39,19 @@ class Synthesize(ApiHandler):
         filtered_style = {k: v for k, v in style.items() if v is not None}
         try:
             if engine == "xtts":
-                audio = await xtts_synthesize_base64(
-                    text,
-                    _xtts_settings(tts_settings),
-                    style=filtered_style,
-                )
+                try:
+                    from python.helpers.xtts_tts import synthesize_base64 as xtts_synthesize_base64
+                except Exception as e:
+                    return {"error": f"XTTS unavailable: {e}", "success": False, "engine": engine}
+                audio = await xtts_synthesize_base64(text, _xtts_settings(tts_settings), style=filtered_style)
                 return {"audio": audio, "success": True, "engine": engine}
 
             if engine == "chatterbox":
-                audio = await chatterbox_synthesize_base64(
-                    text,
-                    _chatterbox_settings(tts_settings),
-                    style=filtered_style,
-                )
+                try:
+                    from python.helpers.chatterbox_tts import synthesize_base64 as chatterbox_synthesize_base64
+                except Exception as e:
+                    return {"error": f"Chatterbox unavailable: {e}", "success": False, "engine": engine}
+                audio = await chatterbox_synthesize_base64(text, _chatterbox_settings(tts_settings), style=filtered_style)
                 return {"audio": audio, "success": True, "engine": engine}
 
             if engine == "browser":

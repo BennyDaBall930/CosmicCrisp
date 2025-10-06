@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import base64
 import os
-from typing import Any, AsyncIterator, Dict
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Dict, List
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,7 @@ from .schemas import (
     BrowserContinueRequest,
     CancelRequest,
     ChatRequest,
+    MemoryBulkDeleteRequest,
     MemoryQuery,
     ResumeRequest,
     RunRequest,
@@ -170,13 +172,55 @@ async def tools_invoke_endpoint(payload: ToolInvokeRequest) -> Dict[str, Any]:
 @router.get("/admin/memory", tags=["Admin"], dependencies=[Depends(require_admin_auth)])
 async def admin_memory_endpoint(query: MemoryQuery) -> Dict[str, Any]:
     store = memory()
-    items = []
+    await store.enter(query.session)
+
+    offset = max(query.offset, 0)
+    limit = max(query.limit, 1)
+    top_k = max(query.top_k, 1)
+
+    items: List[Dict[str, Any]] = []
     if query.query:
-        items = await store.similar(query.query, k=query.top_k)
+        items = await store.similar_paginated(query.query, k=top_k, offset=offset)
+
     if query.recent:
-        recent_items = await store.recent(query.recent)
-        items.extend(recent_items)
-    return {"items": items}
+        recent_items = await store.recent_paginated(k=max(query.recent, 1), offset=offset)
+        if query.query:
+            items.extend(recent_items)
+        else:
+            items = recent_items
+
+    if not query.query and not query.recent:
+        items = await store.recent_paginated(k=limit, offset=offset)
+
+    total = await store.count()
+
+    return {
+        "items": items,
+        "session": query.session,
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+    }
+
+
+@router.get("/admin/memory/sessions", tags=["Admin"], dependencies=[Depends(require_admin_auth)])
+async def admin_memory_sessions_endpoint() -> Dict[str, Any]:
+    store = memory()
+    sessions = await store.sessions()
+    return {"sessions": sessions}
+
+
+@router.get("/admin/memory/stats", tags=["Admin"], dependencies=[Depends(require_admin_auth)])
+async def admin_memory_stats_endpoint() -> Dict[str, Any]:
+    store = memory()
+    stats = await store.stats()
+    last_ts = stats.get("last_ts", 0.0) or 0.0
+    stats["last_ts_iso"] = (
+        datetime.fromtimestamp(last_ts, tz=timezone.utc).isoformat()
+        if last_ts
+        else None
+    )
+    return {"stats": stats}
 
 
 @router.post("/admin/memory/reindex", tags=["Admin"], dependencies=[Depends(require_admin_auth)])
@@ -197,6 +241,13 @@ async def admin_memory_delete_endpoint(memory_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED)
     await delete(memory_id)  # type: ignore[operator]
     return {"ok": True}
+
+
+@router.post("/admin/memory/bulk-delete", tags=["Admin"], dependencies=[Depends(require_admin_auth)])
+async def admin_memory_bulk_delete_endpoint(payload: MemoryBulkDeleteRequest) -> Dict[str, Any]:
+    store = memory()
+    deleted = await store.bulk_delete(payload.ids)
+    return {"ok": True, "deleted": deleted}
 
 
 @router.get("/admin/health", tags=["Admin"], dependencies=[Depends(require_admin_auth)])

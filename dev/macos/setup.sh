@@ -53,15 +53,15 @@ fi
 # --- Step 3: Setup Python Virtual Environment ---
 echo -e "\n${GREEN}Step 3: Setting up Python virtual environment...${NC}"
 
-# Check for Python 3.11
-echo "Checking for Python 3.11..."
-if ! command -v python3.11 &> /dev/null; then
-    echo -e "${RED}Error: Python 3.11 is not installed.${NC}"
+# Check for Python 3.12
+echo "Checking for Python 3.12..."
+if ! command -v python3.12 &> /dev/null; then
+    echo -e "${RED}Error: Python 3.12 is not installed.${NC}"
     echo "Please install it with Homebrew:"
-    echo -e "${YELLOW}brew install python@3.11${NC}"
+    echo -e "${YELLOW}brew install python@3.12${NC}"
     exit 1
 fi
-echo "Python 3.11 found."
+echo "Python 3.12 found."
 
 # Remove existing virtual environment if it exists
 if [ -d "venv" ]; then
@@ -69,8 +69,8 @@ if [ -d "venv" ]; then
     rm -rf venv
 fi
 
-echo "Creating new virtual environment with Python 3.11..."
-python3.11 -m venv venv
+echo "Creating new virtual environment with Python 3.12..."
+python3.12 -m venv venv
 
 echo "Activating virtual environment..."
 source venv/bin/activate

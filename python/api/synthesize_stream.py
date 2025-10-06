@@ -6,18 +6,7 @@ from flask import Response, stream_with_context
 
 from python.helpers.api import ApiHandler, Request
 from python.helpers import settings
-from python.helpers.chatterbox_tts import (
-    ChatterboxConfig,
-    config_from_dict as chatterbox_config_from_dict,
-    get_backend as get_chatterbox_backend,
-    wav_header,
-)
-from python.helpers.xtts_tts import (
-    XTTSConfig,
-    config_from_dict as xtts_config_from_dict,
-    get_backend as get_xtts_backend,
-    wav_header as xtts_wav_header,
-)
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -30,18 +19,20 @@ def _tts_settings() -> dict:
     return tts_settings
 
 
-def _chatterbox_settings(tts_settings: dict) -> ChatterboxConfig:
+def _chatterbox_settings(tts_settings: dict):
+    from python.helpers.chatterbox_tts import config_from_dict as _cfg
     chatterbox = tts_settings.get("chatterbox")
     if not isinstance(chatterbox, dict):
         chatterbox = settings.get_default_settings()["tts"]["chatterbox"]
-    return chatterbox_config_from_dict(chatterbox)
+    return _cfg(chatterbox)
 
 
-def _xtts_settings(tts_settings: dict) -> XTTSConfig:
+def _xtts_settings(tts_settings: dict):
+    from python.helpers.xtts_tts import config_from_dict as _cfg
     xtts = tts_settings.get("xtts")
     if not isinstance(xtts, dict):
         xtts = settings.get_default_settings()["tts"]["xtts"]
-    return xtts_config_from_dict(xtts)
+    return _cfg(xtts)
 
 
 def _gap_bytes(sample_rate: int, join_ms: int) -> bytes:
@@ -69,11 +60,21 @@ class SynthesizeStream(ApiHandler):
             return Response("browser TTS engine does not support server streaming", status=400, mimetype="text/plain")
 
         if engine == "xtts":
-            return self._stream_xtts(text, filtered_style, input, tts_settings)
+            try:
+                return self._stream_xtts(text, filtered_style, input, tts_settings)
+            except Exception as e:
+                return Response(str(e), status=500, mimetype="text/plain")
 
-        return self._stream_chatterbox(text, filtered_style, input, tts_settings)
+        try:
+            return self._stream_chatterbox(text, filtered_style, input, tts_settings)
+        except Exception as e:
+            return Response(str(e), status=500, mimetype="text/plain")
 
     def _stream_chatterbox(self, text: str, style: dict, payload: dict, tts_settings: dict) -> Response:
+        try:
+            from python.helpers.chatterbox_tts import get_backend as get_chatterbox_backend, wav_header
+        except Exception as e:
+            raise RuntimeError(f"Chatterbox unavailable: {e}")
         backend = get_chatterbox_backend(_chatterbox_settings(tts_settings))
         target_chars = int(payload.get("target_chars", backend.cfg.max_chars))
         join_ms = int(payload.get("join_silence_ms", backend.cfg.join_silence_ms))
@@ -152,6 +153,10 @@ class SynthesizeStream(ApiHandler):
         return Response(stream_with_context(generator()), mimetype="audio/wav")
 
     def _stream_xtts(self, text: str, style: dict, payload: dict, tts_settings: dict) -> Response:
+        try:
+            from python.helpers.xtts_tts import get_backend as get_xtts_backend, wav_header as xtts_wav_header
+        except Exception as e:
+            raise RuntimeError(f"XTTS unavailable: {e}")
         backend = get_xtts_backend(_xtts_settings(tts_settings))
         join_ms = int(payload.get("join_silence_ms", backend.cfg.join_silence_ms))
         target_chars = int(payload.get("target_chars", backend.cfg.max_chars))

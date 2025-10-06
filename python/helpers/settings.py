@@ -81,6 +81,13 @@ class Settings(TypedDict):
     browser_model_rl_input: int
     browser_model_rl_output: int
     browser_model_kwargs: dict[str, str]
+    browser_use_headless: bool
+    browser_use_disable_automation: bool
+    browser_use_user_agent: str
+    browser_use_proxy: str
+    browser_use_extra_headers: dict[str, str]
+    browser_use_timeout_secs: int
+    browser_use_cdp_enabled: bool
 
     agent_profile: str
     agent_memory_subdir: str
@@ -1814,6 +1821,14 @@ def _write_sensitive_settings(settings: Settings):
 
 
 def get_default_settings() -> Settings:
+    import sys
+    default_tts_engine = "chatterbox"
+    try:
+        # Prefer browser TTS by default on Python 3.12+ where native backends may be unavailable
+        if sys.version_info[:2] >= (3, 12):
+            default_tts_engine = "browser"
+    except Exception:
+        pass
     return Settings(
         version=_get_version(),
         chat_model_provider="openrouter",
@@ -1849,6 +1864,13 @@ def get_default_settings() -> Settings:
         browser_model_rl_input=0,
         browser_model_rl_output=0,
         browser_model_kwargs={"temperature": "0"},
+        browser_use_headless=True,
+        browser_use_disable_automation=True,
+        browser_use_user_agent="",
+        browser_use_proxy="",
+        browser_use_extra_headers={},
+        browser_use_timeout_secs=90,
+        browser_use_cdp_enabled=False,
         memory_recall_enabled=True,
         memory_recall_delayed=False,
         memory_recall_interval=3,
@@ -1889,7 +1911,7 @@ def get_default_settings() -> Settings:
         stt_silence_duration=1000,
         stt_waiting_timeout=2000,
         tts={
-            "engine": "chatterbox",
+            "engine": default_tts_engine,
             "chatterbox": {
                 "device": None,
                 "multilingual": False,

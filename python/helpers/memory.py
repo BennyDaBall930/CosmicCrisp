@@ -1,287 +1,245 @@
-from datetime import datetime
-from typing import Any, List, Sequence, Tuple, Set
-from langchain.storage import InMemoryByteStore, LocalFileStore
-from langchain.embeddings import CacheBackedEmbeddings
+from __future__ import annotations
 
-# from langchain_chroma import Chroma
-from langchain_community.vectorstores import FAISS
-
-# faiss needs to be patched for python 3.12 on arm #TODO remove once not needed
-from python.helpers import faiss_monkey_patch
-import faiss
-
-
-from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_community.vectorstores.utils import (
-    DistanceStrategy,
-)
-from langchain_core.embeddings import Embeddings
-
-import os, json
-
-import numpy as np
-
-from python.helpers.print_style import PrintStyle
-from . import files
-from langchain_core.documents import Document
-import uuid
-from python.helpers import knowledge_import
-from python.helpers.log import Log, LogItem
+from datetime import datetime, timezone
+import json
+import os
 from enum import Enum
-from agent import Agent
-import models
-import logging
+from typing import Any, Dict, List, Optional, Sequence
+
+from langchain_core.documents import Document
 from simpleeval import simple_eval
 
-
-# Raise the log level so WARNING messages aren't shown
-logging.getLogger("langchain_core.vectorstores.base").setLevel(logging.ERROR)
-
-
-class MyFaiss(FAISS):
-    # override aget_by_ids
-    def get_by_ids(self, ids: Sequence[str], /) -> List[Document]:
-        # return all self.docstore._dict[id] in ids
-        return [self.docstore._dict[id] for id in (ids if isinstance(ids, list) else [ids]) if id in self.docstore._dict]  # type: ignore
-
-    async def aget_by_ids(self, ids: Sequence[str], /) -> List[Document]:
-        return self.get_by_ids(ids)
-
-    def get_all_docs(self):
-        return self.docstore._dict  # type: ignore
+from python.helpers.print_style import PrintStyle
+from python.runtime.memory import get_memory
+from python.runtime.memory.schema import MemoryItem
+from python.runtime.memory.store import MemoryStore
+from python.helpers import files, knowledge_import
+from python.helpers.log import LogItem
 
 
 class Memory:
-
     class Area(Enum):
         MAIN = "main"
         FRAGMENTS = "fragments"
         SOLUTIONS = "solutions"
         INSTRUMENTS = "instruments"
 
-    index: dict[str, "MyFaiss"] = {}
+    _instances: Dict[str, "Memory"] = {}
 
-    @staticmethod
-    async def get(agent: Agent):
-        memory_subdir = agent.config.memory_subdir or "default"
-        if Memory.index.get(memory_subdir) is None:
-            log_item = agent.context.log.log(
-                type="util",
-                heading=f"Initializing VectorDB in '/{memory_subdir}'",
-            )
-            db, created = Memory.initialize(
-                log_item,
-                agent.config.embeddings_model,
-                memory_subdir,
-                False,
-            )
-            Memory.index[memory_subdir] = db
-            wrap = Memory(agent, db, memory_subdir=memory_subdir)
-            if agent.config.knowledge_subdirs:
-                await wrap.preload_knowledge(
-                    log_item, agent.config.knowledge_subdirs, memory_subdir
-                )
-            return wrap
-        else:
-            return Memory(
-                agent=agent,
-                db=Memory.index[memory_subdir],
-                memory_subdir=memory_subdir,
-            )
-
-    @staticmethod
-    async def reload(agent: Agent):
-        memory_subdir = agent.config.memory_subdir or "default"
-        if Memory.index.get(memory_subdir):
-            del Memory.index[memory_subdir]
-        return await Memory.get(agent)
-
-    @staticmethod
-    def initialize(
-        log_item: LogItem | None,
-        model_config: models.ModelConfig,
-        memory_subdir: str,
-        in_memory=False,
-    ) -> tuple[MyFaiss, bool]:
-
-        PrintStyle.standard("Initializing VectorDB...")
-
-        if log_item:
-            log_item.stream(progress="\nInitializing VectorDB")
-
-        em_dir = files.get_abs_path(
-            "memory/embeddings"
-        )  # just caching, no need to parameterize
-        db_dir = Memory._abs_db_dir(memory_subdir)
-
-        # make sure embeddings and database directories exist
-        os.makedirs(db_dir, exist_ok=True)
-
-        if in_memory:
-            store = InMemoryByteStore()
-        else:
-            os.makedirs(em_dir, exist_ok=True)
-            store = LocalFileStore(em_dir)
-
-        embeddings_model = models.get_embedding_model(
-            model_config.provider,
-            model_config.name,
-            **model_config.build_kwargs(),
-        )
-        embeddings_model_id = files.safe_file_name(
-            model_config.provider + "_" + model_config.name
-        )
-
-        # here we setup the embeddings model with the chosen cache storage
-        embedder = CacheBackedEmbeddings.from_bytes_store(
-            embeddings_model, store, namespace=embeddings_model_id
-        )
-
-        # initial DB and docs variables
-        db: MyFaiss | None = None
-        docs: dict[str, Document] | None = None
-
-        created = False
-
-        # if db folder exists and is not empty:
-        if os.path.exists(db_dir) and files.exists(db_dir, "index.faiss"):
-            db = MyFaiss.load_local(
-                folder_path=db_dir,
-                embeddings=embedder,
-                allow_dangerous_deserialization=True,
-                distance_strategy=DistanceStrategy.COSINE,
-                # normalize_L2=True,
-                relevance_score_fn=Memory._cosine_normalizer,
-            )  # type: ignore
-
-            if db:
-                db, repaired = Memory._ensure_index_consistency(db, memory_subdir)
-                if repaired:
-                    PrintStyle.info(
-                        "Detected inconsistent memory index; rebuilt FAISS index from docstore."
-                    )
-
-            # if there is a mismatch in embeddings used, re-index the whole DB
-            emb_ok = False
-            emb_set_file = files.get_abs_path(db_dir, "embedding.json")
-            if files.exists(emb_set_file):
-                embedding_set = json.loads(files.read_file(emb_set_file))
-                if (
-                    embedding_set["model_provider"] == model_config.provider
-                    and embedding_set["model_name"] == model_config.name
-                ):
-                    # model matches
-                    emb_ok = True
-
-            # re-index -  create new DB and insert existing docs
-            if db and not emb_ok:
-                docs = db.get_all_docs()
-                db = None
-
-        # DB not loaded, create one
-        if not db:
-            index = faiss.IndexFlatIP(len(embedder.embed_query("example")))
-
-            db = MyFaiss(
-                embedding_function=embedder,
-                index=index,
-                docstore=InMemoryDocstore(),
-                index_to_docstore_id={},
-                distance_strategy=DistanceStrategy.COSINE,
-                # normalize_L2=True,
-                relevance_score_fn=Memory._cosine_normalizer,
-            )
-
-            # insert docs if reindexing
-            if docs:
-                PrintStyle.standard("Indexing memories...")
-                if log_item:
-                    log_item.stream(progress="\nIndexing memories")
-                db.add_documents(documents=list(docs.values()), ids=list(docs.keys()))
-
-            # save DB
-            Memory._save_db_file(db, memory_subdir)
-            # save meta file
-            meta_file_path = files.get_abs_path(db_dir, "embedding.json")
-            files.write_file(
-                meta_file_path,
-                json.dumps(
-                    {
-                        "model_provider": model_config.provider,
-                        "model_name": model_config.name,
-                    }
-                ),
-            )
-
-            created = True
-
-        return db, created
-
-    def __init__(
-        self,
-        agent: Agent,
-        db: MyFaiss,
-        memory_subdir: str,
-    ):
+    def __init__(self, agent, store: MemoryStore, session: str) -> None:
         self.agent = agent
-        self.db = db
-        self.memory_subdir = memory_subdir
+        self.store = store
+        self.session = session or "default"
+
+    @classmethod
+    async def get(cls, agent) -> "Memory":
+        session = getattr(getattr(agent, "config", None), "memory_subdir", "") or "default"
+        instance = cls._instances.get(session)
+        if instance is None:
+            store = get_memory()
+            await store.enter(session)
+            instance = cls(agent, store, session)
+            cls._instances[session] = instance
+            try:
+                log_item: Optional[LogItem] = agent.context.log.log(  # type: ignore[attr-defined]
+                    type="util",
+                    heading=f"Initializing memory for '/{session}'",
+                )
+            except Exception:
+                log_item = None
+            knowledge_dirs = getattr(getattr(agent, "config", None), "knowledge_subdirs", None)
+            if knowledge_dirs:
+                if isinstance(knowledge_dirs, (list, tuple, set)):
+                    dirs = list(knowledge_dirs)
+                else:
+                    dirs = [knowledge_dirs]
+                await instance.preload_knowledge(
+                    log_item,
+                    dirs,  # type: ignore[arg-type]
+                    session,
+                )
+            if log_item:
+                log_item.update(result="Memory initialized")
+        else:
+            await instance.store.enter(session)
+            instance.agent = agent
+        return instance
+
+    @classmethod
+    async def reload(cls, agent) -> "Memory":
+        session = getattr(getattr(agent, "config", None), "memory_subdir", "") or "default"
+        cls._instances.pop(session, None)
+        return await cls.get(agent)
+
+    async def search_similarity_threshold(
+        self,
+        query: str,
+        limit: int,
+        threshold: float,
+        filter: str = "",
+    ) -> List[Document]:
+        await self.store.enter(self.session)
+        k = max(limit * 3 if limit else 25, 25)
+        raw = await self.store.similar_paginated(query=query, k=k, offset=0)
+        comparator = self._get_comparator(filter) if filter else None
+
+        results: List[Document] = []
+        for item in raw:
+            metadata = item.get("meta", {}) or {}
+            if comparator and not comparator(metadata):
+                continue
+            score = float(item.get("score", 0.0) or 0.0)
+            if score < threshold:
+                continue
+            results.append(self._to_document(item))
+            if limit and len(results) >= limit:
+                break
+
+        return results
+
+    async def search_by_metadata(self, filter: str, limit: int = 0) -> List[Document]:
+        await self.store.enter(self.session)
+        comparator = self._get_comparator(filter)
+        items = await self.store.all()
+        matches: List[Document] = []
+        for item in items:
+            metadata = item.get("meta", {}) or {}
+            if comparator(metadata):
+                matches.append(self._to_document(item))
+                if limit and len(matches) >= limit:
+                    break
+        return matches
+
+    async def insert_text(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        await self.store.enter(self.session)
+        meta = dict(metadata or {})
+        kind = meta.pop("kind", "note")
+        tags_raw = meta.pop("tags", [])
+        tags = list(tags_raw if isinstance(tags_raw, list) else [tags_raw])
+        if not meta.get("area"):
+            meta["area"] = Memory.Area.MAIN.value
+        if "import_timestamp" not in meta or meta.get("import_timestamp") in (None, ""):
+            meta["import_timestamp"] = self.get_timestamp()
+        item = MemoryItem(
+            kind=kind,
+            ts=datetime.utcnow(),
+            tags=tags,
+            text=text,
+            meta=meta,
+        )
+        item.meta.setdefault("session", self.session)
+        return await self.store.add(item)
+
+    async def insert_documents(self, docs: Sequence[Document]) -> List[str]:
+        ids: List[str] = []
+        for doc in docs:
+            metadata = getattr(doc, "metadata", {}) or {}
+            text = getattr(doc, "page_content", "")
+            new_id = await self.insert_text(text, dict(metadata))
+            ids.append(new_id)
+        return ids
+
+    async def delete_documents_by_ids(self, ids: Sequence[str]) -> List[Document]:
+        await self.store.enter(self.session)
+        existing = await self.store.get_many(list(ids))
+        docs = [self._to_document(item) for item in existing]
+        if ids:
+            await self.store.bulk_delete(list(ids))
+        return docs
+
+    async def get_by_ids(self, ids: Sequence[str]) -> List[Document]:
+        if not ids:
+            return []
+        await self.store.enter(self.session)
+        items = await self.store.get_many(list(ids))
+        return [self._to_document(item) for item in items]
+
+    async def get_recent(self, limit: int = 10, offset: int = 0) -> List[Document]:
+        await self.store.enter(self.session)
+        raw = await self.store.recent_paginated(k=limit, offset=offset)
+        return [self._to_document(item) for item in raw]
+
+    async def delete_documents_by_query(self, query: str, threshold: float, filter: str = "") -> List[Document]:
+        await self.store.enter(self.session)
+        comparator = self._get_comparator(filter) if filter else None
+        k = 200
+        raw = await self.store.similar_paginated(query=query, k=k, offset=0)
+        matches: List[Dict[str, Any]] = []
+        ids: List[str] = []
+        for item in raw:
+            score = float(item.get("score", 0.0) or 0.0)
+            meta = item.get("meta", {}) or {}
+            if score < threshold:
+                continue
+            if comparator and not comparator(meta):
+                continue
+            matches.append(item)
+            if item.get("id"):
+                ids.append(str(item["id"]))
+        if not ids:
+            return []
+        docs = [self._to_document(m) for m in matches]
+        await self.store.bulk_delete(ids)
+        return docs
 
     async def preload_knowledge(
-        self, log_item: LogItem | None, kn_dirs: list[str], memory_subdir: str
-    ):
+        self,
+        log_item: Optional[LogItem],
+        kn_dirs: List[str],
+        memory_subdir: str,
+    ) -> None:
+        if not kn_dirs:
+            return
+
         if log_item:
             log_item.update(heading="Preloading knowledge...")
 
-        # db abs path
-        db_dir = Memory._abs_db_dir(memory_subdir)
-
-        # Load the index file if it exists
+        db_dir = self._abs_db_dir(memory_subdir)
+        os.makedirs(db_dir, exist_ok=True)
         index_path = files.get_abs_path(db_dir, "knowledge_import.json")
 
-        # make sure directory exists
-        if not os.path.exists(db_dir):
-            os.makedirs(db_dir)
-
-        index: dict[str, knowledge_import.KnowledgeImport] = {}
+        index: Dict[str, Dict[str, Any]] = {}
         if os.path.exists(index_path):
-            with open(index_path, "r") as f:
-                index = json.load(f)
+            try:
+                with open(index_path, "r") as fh:
+                    index = json.load(fh)
+            except Exception:
+                index = {}
 
-        # preload knowledge folders
         index = self._preload_knowledge_folders(log_item, kn_dirs, index)
 
-        for file in index:
-            if index[file]["state"] in ["changed", "removed"] and index[file].get(
-                "ids", []
-            ):  # for knowledge files that have been changed or removed and have IDs
-                await self.delete_documents_by_ids(
-                    index[file]["ids"]
-                )  # remove original version
-            if index[file]["state"] == "changed":
-                index[file]["ids"] = await self.insert_documents(
-                    index[file]["documents"]
-                )  # insert new version
+        for file_path, entry in list(index.items()):
+            state = entry.get("state")
+            ids = entry.get("ids", []) or []
+            documents = entry.get("documents", []) or []
 
-        # remove index where state="removed"
-        index = {k: v for k, v in index.items() if v["state"] != "removed"}
+            if state in {"changed", "removed"} and ids:
+                await self.delete_documents_by_ids([str(i) for i in ids])
 
-        # strip state and documents from index and save it
-        for file in index:
-            if "documents" in index[file]:
-                del index[file]["documents"]  # type: ignore
-            if "state" in index[file]:
-                del index[file]["state"]  # type: ignore
-        with open(index_path, "w") as f:
-            json.dump(index, f)
+            if state == "changed" and documents:
+                try:
+                    entry["ids"] = await self.insert_documents(documents)
+                except Exception as exc:
+                    PrintStyle().error(f"Failed to insert knowledge from {file_path}: {exc}")
+                    entry["ids"] = []
+
+        index = {k: v for k, v in index.items() if v.get("state") != "removed"}
+        for entry in index.values():
+            entry.pop("documents", None)
+            entry.pop("state", None)
+
+        try:
+            with open(index_path, "w") as fh:
+                json.dump(index, fh)
+        except Exception as exc:
+            PrintStyle().error(f"Failed to persist knowledge index: {exc}")
 
     def _preload_knowledge_folders(
         self,
-        log_item: LogItem | None,
-        kn_dirs: list[str],
-        index: dict[str, knowledge_import.KnowledgeImport],
-    ):
-        # load knowledge folders, subfolders by area
+        log_item: Optional[LogItem],
+        kn_dirs: List[str],
+        index: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
         for kn_dir in kn_dirs:
             for area in Memory.Area:
                 index = knowledge_import.load_knowledge(
@@ -291,7 +249,6 @@ class Memory:
                     {"area": area.value},
                 )
 
-        # load instruments descriptions
         index = knowledge_import.load_knowledge(
             log_item,
             files.get_abs_path("instruments"),
@@ -299,249 +256,65 @@ class Memory:
             {"area": Memory.Area.INSTRUMENTS.value},
             filename_pattern="**/*.md",
         )
-
         return index
-
-    async def search_similarity_threshold(
-        self, query: str, limit: int, threshold: float, filter: str = ""
-    ):
-        comparator = Memory._get_comparator(filter) if filter else None
-
-        try:
-            return await self.db.asearch(
-                query,
-                search_type="similarity_score_threshold",
-                k=limit,
-                score_threshold=threshold,
-                filter=comparator,
-            )
-        except ValueError as exc:
-            if "Could not find document for id" in str(exc):
-                PrintStyle.warning(
-                    "Stale memory reference detected during search; rebuilding index."
-                )
-                self.db, _ = Memory._ensure_index_consistency(
-                    self.db, self.memory_subdir, force=True
-                )
-                Memory.index[self.memory_subdir] = self.db
-                return await self.db.asearch(
-                    query,
-                    search_type="similarity_score_threshold",
-                    k=limit,
-                    score_threshold=threshold,
-                    filter=comparator,
-                )
-            raise
-
-    async def delete_documents_by_query(
-        self, query: str, threshold: float, filter: str = ""
-    ):
-        k = 100
-        tot = 0
-        removed = []
-
-        while True:
-            # Perform similarity search with score
-            docs = await self.search_similarity_threshold(
-                query, limit=k, threshold=threshold, filter=filter
-            )
-            removed += docs
-
-            # Extract document IDs and filter based on score
-            # document_ids = [result[0].metadata["id"] for result in docs if result[1] < score_limit]
-            document_ids = [result.metadata["id"] for result in docs]
-
-            # Delete documents with IDs over the threshold score
-            if document_ids:
-                # fnd = self.db.get(where={"id": {"$in": document_ids}})
-                # if fnd["ids"]: self.db.delete(ids=fnd["ids"])
-                # tot += len(fnd["ids"])
-                await self.db.adelete(ids=document_ids)
-                tot += len(document_ids)
-
-            # If fewer than K document IDs, break the loop
-            if len(document_ids) < k:
-                break
-
-        if tot:
-            self._save_db()  # persist
-        return removed
-
-    async def delete_documents_by_ids(self, ids: list[str]):
-        # aget_by_ids is not yet implemented in faiss, need to do a workaround
-        rem_docs = await self.db.aget_by_ids(
-            ids
-        )  # existing docs to remove (prevents error)
-        if rem_docs:
-            rem_ids = [doc.metadata["id"] for doc in rem_docs]  # ids to remove
-            await self.db.adelete(ids=rem_ids)
-
-        if rem_docs:
-            self._save_db()  # persist
-        return rem_docs
-
-    async def insert_text(self, text, metadata: dict = {}):
-        doc = Document(text, metadata=metadata)
-        ids = await self.insert_documents([doc])
-        return ids[0]
-
-    async def insert_documents(self, docs: list[Document]):
-        ids = [str(uuid.uuid4()) for _ in range(len(docs))]
-        timestamp = self.get_timestamp()
-
-        if ids:
-            for doc, id in zip(docs, ids):
-                doc.metadata["id"] = id  # add ids to documents metadata
-                doc.metadata["timestamp"] = timestamp  # add timestamp
-                if not doc.metadata.get("area", ""):
-                    doc.metadata["area"] = Memory.Area.MAIN.value
-
-            await self.db.aadd_documents(documents=docs, ids=ids)
-            self._save_db()  # persist
-        return ids
-
-    def _save_db(self):
-        Memory._save_db_file(self.db, self.memory_subdir)
-
-    @staticmethod
-    def _save_db_file(db: MyFaiss, memory_subdir: str):
-        abs_dir = Memory._abs_db_dir(memory_subdir)
-        db.save_local(folder_path=abs_dir)
-
-    @staticmethod
-    def _ensure_index_consistency(
-        db: MyFaiss, memory_subdir: str, force: bool = False
-    ) -> Tuple[MyFaiss, bool]:
-        missing, orphaned = Memory._detect_index_drift(db)
-        if not force and not missing and not orphaned:
-            return db, False
-
-        if missing or orphaned:
-            messages = []
-
-            def _fmt(label: str, values: Set[str]) -> str:
-                preview = sorted(values)
-                extra = ""
-                if len(preview) > 5:
-                    extra = f" (+{len(preview) - 5} more)"
-                    preview = preview[:5]
-                return f"{label} {preview}{extra}"
-
-            if missing:
-                messages.append(_fmt("missing documents", missing))
-            if orphaned:
-                messages.append(_fmt("orphaned documents", orphaned))
-
-            PrintStyle.warning(
-                "Repairing FAISS memory index: "
-                + ", ".join(messages)
-            )
-        else:
-            PrintStyle.warning("Rebuilding FAISS memory index (forced repair)")
-
-        new_db = Memory._rebuild_from_docstore(db, memory_subdir)
-        return new_db, True
-
-    @staticmethod
-    def _detect_index_drift(db: MyFaiss) -> Tuple[Set[str], Set[str]]:
-        docs_dict = db.get_all_docs()
-        doc_ids = set(docs_dict.keys())
-        index_ids = set(db.index_to_docstore_id.values())
-        missing = index_ids - doc_ids
-        orphaned = doc_ids - index_ids
-        return missing, orphaned
-
-    @staticmethod
-    def _rebuild_from_docstore(db: MyFaiss, memory_subdir: str) -> MyFaiss:
-        docs_dict = db.get_all_docs()
-        embedder = db.embedding_function
-        dimension = getattr(db.index, "d", None)
-        if dimension is None:
-            sample = embedder.embed_query("example")
-            dimension = len(sample)
-
-        rebuilt = MyFaiss(
-            embedding_function=embedder,
-            index=faiss.IndexFlatIP(dimension),
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-            relevance_score_fn=db.override_relevance_score_fn,
-            normalize_L2=db._normalize_L2,
-            distance_strategy=db.distance_strategy,
-        )
-
-        ids: list[str] = []
-        docs: list[Document] = []
-        for doc_id, original in docs_dict.items():
-            metadata = dict(original.metadata)
-            metadata.setdefault("id", doc_id)
-            if not metadata.get("area"):
-                metadata["area"] = Memory.Area.MAIN.value
-            docs.append(Document(page_content=original.page_content, metadata=metadata))
-            ids.append(doc_id)
-
-        if docs:
-            rebuilt.add_documents(documents=docs, ids=ids)
-
-        Memory._save_db_file(rebuilt, memory_subdir)
-        return rebuilt
-
-    @staticmethod
-    def _get_comparator(condition: str):
-        def comparator(data: dict[str, Any]):
-            try:
-                result = simple_eval(condition, names=data)
-                return result
-            except Exception as e:
-                PrintStyle.error(f"Error evaluating condition: {e}")
-                return False
-
-        return comparator
-
-    @staticmethod
-    def _score_normalizer(val: float) -> float:
-        res = 1 - 1 / (1 + np.exp(val))
-        return res
-
-    @staticmethod
-    def _cosine_normalizer(val: float) -> float:
-        res = (1 + val) / 2
-        res = max(
-            0, min(1, res)
-        )  # float precision can cause values like 1.0000000596046448
-        return res
 
     @staticmethod
     def _abs_db_dir(memory_subdir: str) -> str:
         return files.get_abs_path("memory", memory_subdir)
 
     @staticmethod
-    def format_docs_plain(docs: list[Document]) -> list[str]:
-        result = []
+    def format_docs_plain(docs: Sequence[Document]) -> List[str]:
+        formatted: List[str] = []
         for doc in docs:
-            text = ""
-            for k, v in doc.metadata.items():
-                text += f"{k}: {v}\n"
-            text += f"Content: {doc.page_content}"
-            result.append(text)
-        return result
+            metadata = getattr(doc, "metadata", {}) or {}
+            lines = [f"{key}: {value}" for key, value in metadata.items()]
+            lines.append(f"Content: {getattr(doc, 'page_content', '')}")
+            formatted.append("\n".join(lines))
+        return formatted
 
     @staticmethod
-    def get_timestamp():
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def get_timestamp() -> str:
+        return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+
+    @staticmethod
+    def _get_comparator(condition: str):
+        def comparator(data: Dict[str, Any]) -> bool:
+            try:
+                return bool(simple_eval(condition, names=data))
+            except Exception as exc:  # pragma: no cover - defensive
+                PrintStyle.error(f"Error evaluating condition '{condition}': {exc}")
+                return False
+
+        return comparator
+
+    @staticmethod
+    def _to_document(item: Dict[str, Any]) -> Document:
+        metadata = dict(item.get("meta", {}) or {})
+        metadata.setdefault("id", item.get("id"))
+        metadata.setdefault("kind", item.get("kind", "note"))
+        metadata.setdefault("tags", item.get("tags", []))
+        metadata.setdefault("timestamp", item.get("ts"))
+        if "score" not in metadata and item.get("score") is not None:
+            metadata["score"] = item.get("score")
+        if metadata.get("session") is None and item.get("meta"):
+            metadata["session"] = item["meta"].get("session")
+        text = item.get("text", "")
+        return Document(page_content=text, metadata=metadata)
 
 
-def get_memory_subdir_abs(agent: Agent) -> str:
-    return files.get_abs_path("memory", agent.config.memory_subdir or "default")
+def get_memory_subdir_abs(agent) -> str:
+    """Project-relative path to the agent's memory subdirectory."""
+    subdir = getattr(getattr(agent, "config", None), "memory_subdir", "") or "default"
+    return files.get_abs_path("memory", subdir)
 
 
-def get_custom_knowledge_subdir_abs(agent: Agent) -> str:
-    for dir in agent.config.knowledge_subdirs:
-        if dir != "default":
-            return files.get_abs_path("knowledge", dir)
+def get_custom_knowledge_subdir_abs(agent) -> str:
+    """Absolute path to the agent's custom knowledge subdir."""
+    for dir_name in getattr(agent.config, "knowledge_subdirs", []) or []:
+        if dir_name != "default":
+            return files.get_abs_path("knowledge", dir_name)
     raise Exception("No custom knowledge subdir set")
 
 
 def reload():
-    # clear the memory index, this will force all DBs to reload
-    Memory.index = {}
+    Memory._instances = {}

@@ -2713,3 +2713,142 @@ nav ul li a img {
 .spin {
   animation: spin 1s linear infinite;
 }
+
+/* Memory dashboard */
+.memory-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.memory-actions .btn {
+  margin-left: 8px;
+}
+
+.memory-actions .btn:first-child {
+  margin-left: 0;
+}
+
+.memory-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.memory-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--panel-bg-alt, #1d1f24);
+  border: 1px solid var(--border-color, #303540);
+}
+
+.memory-stat .label {
+  font-size: 12px;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.memory-stat .value {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.memory-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.memory-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  gap: 4px;
+}
+
+.memory-controls input,
+.memory-controls select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #303540);
+  background: var(--input-bg, #10131a);
+  color: inherit;
+}
+
+.memory-controls .btn {
+  margin-left: auto;
+}
+
+.memory-table-wrapper {
+  position: relative;
+  border: 1px solid var(--border-color, #303540);
+  border-radius: 8px;
+  overflow: hidden;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel-bg-alt, #14171f);
+}
+
+.memory-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.memory-table th,
+.memory-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color, #303540);
+  vertical-align: top;
+  text-align: left;
+}
+
+.memory-table thead th {
+  background: var(--panel-bg, #1a1d25);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.memory-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.memory-table tr.selected {
+  background: rgba(0, 195, 64, 0.12);
+}
+
+.memory-content {
+  max-width: 280px;
+  white-space: normal;
+}
+
+.memory-loading,
+.memory-empty {
+  padding: 12px;
+  font-style: italic;
+}
+
+.memory-pagination {
+  margin-top: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.memory-page-controls button + button {
+  margin-left: 8px;
+}
+
+.memory-tag {
+  white-space: nowrap;
+}

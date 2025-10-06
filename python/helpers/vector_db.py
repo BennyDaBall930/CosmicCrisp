@@ -1,149 +1,122 @@
-from typing import Any, List, Sequence
+from __future__ import annotations
+
+import asyncio
+import math
 import uuid
-from langchain_community.vectorstores import FAISS
-
-# faiss needs to be patched for python 3.12 on arm #TODO remove once not needed
-from python.helpers import faiss_monkey_patch
-import faiss
-
+from typing import Any, Dict, List, Sequence
 
 from langchain_core.documents import Document
-from langchain.storage import InMemoryByteStore
-from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_community.vectorstores.utils import (
-    DistanceStrategy,
-)
-from langchain.embeddings import CacheBackedEmbeddings
+from simpleeval import simple_eval
 
-from agent import Agent
+from python.helpers.print_style import PrintStyle
 
 
-class MyFaiss(FAISS):
-    # override aget_by_ids
-    def get_by_ids(self, ids: Sequence[str], /) -> List[Document]:
-        # return all self.docstore._dict[id] in ids
-        return [self.docstore._dict[id] for id in (ids if isinstance(ids, list) else [ids]) if id in self.docstore._dict]  # type: ignore
-
-    async def aget_by_ids(self, ids: Sequence[str], /) -> List[Document]:
-        return self.get_by_ids(ids)
-
-    def get_all_docs(self) -> dict[str, Document]:
-        return self.docstore._dict  # type: ignore
+def _cosine_similarity(vec1: Sequence[float], vec2: Sequence[float]) -> float:
+    if not vec1 or not vec2:
+        return 0.0
+    dot = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+    if norm1 == 0.0 or norm2 == 0.0:
+        return 0.0
+    return dot / (norm1 * norm2)
 
 
-class VectorDB:
-
-    _cached_embeddings: dict[str, CacheBackedEmbeddings] = {}
-
-    @staticmethod
-    def _get_embeddings(agent: Agent, cache: bool = True):
-        model = agent.get_embedding_model()
-        if not cache:
-            return model  # return raw embeddings if cache is False
-        namespace = getattr(
-            model,
-            "model_name",
-            "default",
-        )
-        if namespace not in VectorDB._cached_embeddings:
-            store = InMemoryByteStore()
-            VectorDB._cached_embeddings[namespace] = (
-                CacheBackedEmbeddings.from_bytes_store(
-                    model,
-                    store,
-                    namespace=namespace,
-                )
-            )
-        return VectorDB._cached_embeddings[namespace]
-
-    def __init__(self, agent: Agent, cache: bool = True):
-        self.agent = agent
-        self.cache = cache  # store cache preference
-        self.embeddings = self._get_embeddings(agent, cache=cache)
-        self.index = faiss.IndexFlatIP(len(self.embeddings.embed_query("example")))
-
-        self.db = MyFaiss(
-            embedding_function=self.embeddings,
-            index=self.index,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-            distance_strategy=DistanceStrategy.COSINE,
-            # normalize_L2=True,
-            relevance_score_fn=cosine_normalizer,
-        )
-
-    async def search_by_similarity_threshold(
-        self, query: str, limit: int, threshold: float, filter: str = ""
-    ):
-        comparator = get_comparator(filter) if filter else None
-
-        return await self.db.asearch(
-            query,
-            search_type="similarity_score_threshold",
-            k=limit,
-            score_threshold=threshold,
-            filter=comparator,
-        )
-
-    async def search_by_metadata(self, filter: str, limit: int = 0) -> list[Document]:
-        comparator = get_comparator(filter)
-        all_docs = self.db.get_all_docs()
-        result = []
-        for doc in all_docs.values():
-            if comparator(doc.metadata):
-                result.append(doc)
-                # stop if limit reached and limit > 0
-                if limit > 0 and len(result) >= limit:
-                    break
-        return result
-
-    async def insert_documents(self, docs: list[Document]):
-        ids = [str(uuid.uuid4()) for _ in range(len(docs))]
-
-        if ids:
-            for doc, id in zip(docs, ids):
-                doc.metadata["id"] = id  # add ids to documents metadata
-
-            self.db.add_documents(documents=docs, ids=ids)
-        return ids
-
-    async def delete_documents_by_ids(self, ids: list[str]):
-        # aget_by_ids is not yet implemented in faiss, need to do a workaround
-        rem_docs = await self.db.aget_by_ids(
-            ids
-        )  # existing docs to remove (prevents error)
-        if rem_docs:
-            rem_ids = [doc.metadata["id"] for doc in rem_docs]  # ids to remove
-            await self.db.adelete(ids=rem_ids)
-        return rem_docs
-
-
-def format_docs_plain(docs: list[Document]) -> list[str]:
-    result = []
-    for doc in docs:
-        text = ""
-        for k, v in doc.metadata.items():
-            text += f"{k}: {v}\n"
-        text += f"Content: {doc.page_content}"
-        result.append(text)
-    return result
-
-
-def cosine_normalizer(val: float) -> float:
-    res = (1 + val) / 2
-    res = max(
-        0, min(1, res)
-    )  # float precision can cause values like 1.0000000596046448
-    return res
-
-
-def get_comparator(condition: str):
-    def comparator(data: dict[str, Any]):
+def _get_comparator(condition: str):
+    def comparator(metadata: Dict[str, Any]) -> bool:
         try:
-            result = eval(condition, {}, data)
-            return result
-        except Exception as e:
-            # PrintStyle.error(f"Error evaluating condition: {e}")
+            return bool(simple_eval(condition, names=metadata))
+        except Exception as exc:  # pragma: no cover - defensive
+            PrintStyle.error(f"Error evaluating condition '{condition}': {exc}")
             return False
 
     return comparator
+
+
+class VectorDB:
+    _cached_embeddings: Dict[str, Any] = {}
+
+    @staticmethod
+    def _get_embeddings(agent, cache: bool = True):
+        model = agent.get_embedding_model()
+        if not cache:
+            return model
+        namespace = getattr(model, "model_name", "default")
+        # Cache the embedding model to avoid re-instantiation cost
+        if namespace not in VectorDB._cached_embeddings:
+            VectorDB._cached_embeddings[namespace] = model
+        return VectorDB._cached_embeddings[namespace]
+
+    def __init__(self, agent, cache: bool = True) -> None:
+        self.agent = agent
+        self.embeddings = self._get_embeddings(agent, cache=cache)
+        self._docs: Dict[str, Document] = {}
+        self._vectors: Dict[str, List[float]] = {}
+
+    async def search_by_similarity_threshold(
+        self, query: str, limit: int, threshold: float, filter: str = ""
+    ) -> List[Document]:
+        comparator = _get_comparator(filter) if filter else None
+        query_vector = await self._embed_query(query)
+        scored: List[tuple[float, Document]] = []
+        for doc_id, vector in self._vectors.items():
+            score = _cosine_similarity(query_vector, vector)
+            if score < threshold:
+                continue
+            doc = self._docs[doc_id]
+            if comparator and not comparator(doc.metadata):
+                continue
+            scored.append((score, doc))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [doc for _, doc in scored[:limit]]
+
+    async def search_by_metadata(self, filter: str, limit: int = 0) -> List[Document]:
+        comparator = _get_comparator(filter)
+        results: List[Document] = []
+        for doc in self._docs.values():
+            if comparator(doc.metadata):
+                results.append(doc)
+                if limit and len(results) >= limit:
+                    break
+        return results
+
+    async def insert_documents(self, docs: Sequence[Document]) -> List[str]:
+        texts = [doc.page_content for doc in docs]
+        vectors = await self._embed_documents(texts)
+        ids: List[str] = []
+        for doc, vector in zip(docs, vectors):
+            doc_id = str(uuid.uuid4())
+            doc.metadata["id"] = doc_id
+            self._docs[doc_id] = doc
+            self._vectors[doc_id] = vector
+            ids.append(doc_id)
+        return ids
+
+    async def delete_documents_by_ids(self, ids: Sequence[str]) -> List[Document]:
+        removed: List[Document] = []
+        for doc_id in ids:
+            doc = self._docs.pop(doc_id, None)
+            self._vectors.pop(doc_id, None)
+            if doc:
+                removed.append(doc)
+        return removed
+
+    def get_all_docs(self) -> Dict[str, Document]:
+        return dict(self._docs)
+
+    async def _embed_documents(self, texts: Sequence[str]) -> List[List[float]]:
+        if hasattr(self.embeddings, "embed_documents"):
+            return await asyncio.to_thread(self.embeddings.embed_documents, list(texts))
+        # Fallback: use embed_query per text
+        vectors: List[List[float]] = []
+        for text in texts:
+            vectors.append(await self._embed_query(text))
+        return vectors
+
+    async def _embed_query(self, text: str) -> List[float]:
+        if hasattr(self.embeddings, "embed_query"):
+            return await asyncio.to_thread(self.embeddings.embed_query, text)
+        if hasattr(self.embeddings, "embed_documents"):
+            result = await asyncio.to_thread(self.embeddings.embed_documents, [text])
+            return result[0] if result else []
+        raise RuntimeError("Embedding model does not support embedding queries")

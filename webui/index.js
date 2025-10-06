@@ -698,6 +698,17 @@ function ensureProperTabSelection(contextId) {
     return true;
   }
 
+  if (activeTab === "memory") {
+    if (isTask) {
+      localStorage.setItem("lastSelectedTask", contextId);
+      activateTab("tasks");
+    } else {
+      localStorage.setItem("lastSelectedChat", contextId);
+      activateTab("chats");
+    }
+    return true;
+  }
+
   return false;
 }
 
@@ -727,6 +738,9 @@ globalThis.selectChat = async function (id) {
       localStorage.setItem("lastSelectedChat", id);
     } else if (activeTab === "tasks") {
       localStorage.setItem("lastSelectedTask", id);
+    } else if (activeTab === "memory") {
+      // Default to remembering chat selection when coming from memory tab
+      localStorage.setItem("lastSelectedChat", id);
     }
 
     // Trigger an immediate poll to fetch content
@@ -1091,14 +1105,19 @@ document.addEventListener("DOMContentLoaded", function () {
 function setupTabs() {
   const chatsTab = document.getElementById("chats-tab");
   const tasksTab = document.getElementById("tasks-tab");
+  const memoryTab = document.getElementById("memory-tab");
 
-  if (chatsTab && tasksTab) {
+  if (chatsTab && tasksTab && memoryTab) {
     chatsTab.addEventListener("click", function () {
       activateTab("chats");
     });
 
     tasksTab.addEventListener("click", function () {
       activateTab("tasks");
+    });
+
+    memoryTab.addEventListener("click", function () {
+      activateTab("memory");
     });
   } else {
     console.error("Tab elements not found");
@@ -1109,8 +1128,10 @@ function setupTabs() {
 function activateTab(tabName) {
   const chatsTab = document.getElementById("chats-tab");
   const tasksTab = document.getElementById("tasks-tab");
+  const memoryTab = document.getElementById("memory-tab");
   const chatsSection = document.getElementById("chats-section");
   const tasksSection = document.getElementById("tasks-section");
+  const memorySection = document.getElementById("memory-section");
 
   // Get current context to preserve before switching
   const currentContext = context;
@@ -1126,8 +1147,14 @@ function activateTab(tabName) {
   // Reset all tabs and sections
   chatsTab.classList.remove("active");
   tasksTab.classList.remove("active");
+  if (memoryTab) {
+    memoryTab.classList.remove("active");
+  }
   chatsSection.style.display = "none";
   tasksSection.style.display = "none";
+  if (memorySection) {
+    memorySection.style.display = "none";
+  }
 
   // Remember the last active tab in localStorage
   localStorage.setItem("activeTab", tabName);
@@ -1179,6 +1206,9 @@ function activateTab(tabName) {
     ) {
       setContext(lastSelectedTask);
     }
+  } else if (tabName === "memory" && memoryTab && memorySection) {
+    memoryTab.classList.add("active");
+    memorySection.style.display = "block";
   }
 
   // Request a poll update

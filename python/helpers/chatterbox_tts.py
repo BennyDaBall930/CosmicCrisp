@@ -49,14 +49,14 @@ import numpy as np
 import torch
 import torchaudio as ta
 
-try:
-    from chatterbox.tts import ChatterboxTTS
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-except ImportError as exc:  # pragma: no cover - surfaced in runtime logs
-    raise RuntimeError(
-        "chatterbox-tts is required for the Chatterbox backend. Install with "
-        "`pip install chatterbox-tts torchaudio`"
-    ) from exc
+try:  # pragma: no cover - optional dependency
+    from chatterbox.tts import ChatterboxTTS  # type: ignore
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
+    _CHATTERBOX_AVAILABLE = True
+    _CHATTERBOX_IMPORT_ERROR: Optional[Exception] = None
+except Exception as exc:  # pragma: no cover - surfaced in runtime logs
+    _CHATTERBOX_AVAILABLE = False
+    _CHATTERBOX_IMPORT_ERROR = exc
 
 try:
     torch.set_float32_matmul_precision("medium")
@@ -99,6 +99,14 @@ class ChatterboxBackend:
     """Thin adapter around the chatterbox-tts models."""
 
     def __init__(self, cfg: ChatterboxConfig):
+        if not _CHATTERBOX_AVAILABLE:
+            hint = (
+                "chatterbox-tts is unavailable for this Python interpreter. "
+                "If you require local speech synthesis, switch to Python 3.11 or select a different TTS engine."
+            )
+            if _CHATTERBOX_IMPORT_ERROR:
+                raise RuntimeError(hint) from _CHATTERBOX_IMPORT_ERROR
+            raise RuntimeError(hint)
         self.cfg = cfg
         self.device = _pick_device(cfg.device)
         if cfg.multilingual:
@@ -408,6 +416,14 @@ _backend_cfg: Optional[ChatterboxConfig] = None
 
 
 def get_backend(cfg: ChatterboxConfig) -> ChatterboxBackend:
+    if not _CHATTERBOX_AVAILABLE:
+        hint = (
+            "chatterbox-tts is not installed or unsupported on Python 3.12+. "
+            "Set TTS engine to 'browser' or install chatterbox-tts under Python 3.11."
+        )
+        if _CHATTERBOX_IMPORT_ERROR:
+            raise RuntimeError(hint) from _CHATTERBOX_IMPORT_ERROR
+        raise RuntimeError(hint)
     global _backend, _backend_cfg
     if _backend and _backend_cfg == cfg:
         return _backend

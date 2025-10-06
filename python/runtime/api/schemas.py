@@ -32,9 +32,16 @@ class ToolInvokeRequest(BaseModel):
 
 
 class MemoryQuery(BaseModel):
+    session: str = "default"
     query: Optional[str] = None
     top_k: int = 6
     recent: int = 0
+    offset: int = 0
+    limit: int = 50
+
+
+class MemoryBulkDeleteRequest(BaseModel):
+    ids: List[str] = Field(default_factory=list)
 
 
 class CancelRequest(BaseModel):
@@ -58,6 +65,7 @@ __all__ = [
     "RunRequest",
     "ToolInvokeRequest",
     "MemoryQuery",
+    "MemoryBulkDeleteRequest",
     "CancelRequest",
     "ResumeRequest",
     "BrowserContinueRequest",

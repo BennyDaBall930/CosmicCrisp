@@ -46,7 +46,14 @@ fi
 # Check for other critical dependencies
 # Include playwright so browser tools load reliably. Avoid bare importing browser_use
 # here since it may attempt to touch ~/.config during import; we do a safe check.
-REQUIRED_MODULES=("flask" "litellm" "mcp" "chatterbox" "playwright" "aiohttp")
+REQUIRED_MODULES=("flask" "litellm" "mcp" "playwright" "aiohttp")
+if [ "$(python3 - <<'PY'
+import sys
+print(int(sys.version_info[:2] < (3, 12)))
+PY
+)" -eq 1 ]; then
+    REQUIRED_MODULES+=("chatterbox")
+fi
 for module in "${REQUIRED_MODULES[@]}"; do
     if ! python3 -c "import $module" 2>/dev/null; then
         echo -e "${YELLOW}Warning: $module not found, installing requirements...${NC}"

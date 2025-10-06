@@ -342,7 +342,7 @@ class DocumentQueryStore:
 
         # Extract unique URIs
         uris = set()
-        for doc in self.vector_db.db.get_all_docs().values():
+        for doc in self.vector_db.get_all_docs().values():
             if isinstance(doc.metadata, dict):
                 uri = doc.metadata.get("document_uri")
                 if uri:

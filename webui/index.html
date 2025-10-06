@@ -100,6 +100,7 @@
     <!-- Load module scripts first -->
     <script type="module" src="js/scheduler.js"></script>
     <script type="module" src="js/history.js"></script>
+    <script type="module" src="js/memory.js"></script>
 
     <script type="module" src="index.js"></script>
 
@@ -183,6 +184,7 @@
                     <div class="tabs">
                         <div class="tab active" id="chats-tab">Chats</div>
                         <div class="tab" id="tasks-tab">Tasks</div>
+                        <div class="tab" id="memory-tab">Memory</div>
                     </div>
                 </div>
 
@@ -261,6 +263,132 @@
                         </ul>
                         <div class="empty-list-message" x-show="tasks.length === 0">
                             <p><i>No tasks to list.</i></p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Memory Dashboard -->
+                <div class="config-section" id="memory-section" x-data="memoryDashboard()" x-init="init()"
+                    x-cloak style="display: none;">
+                    <div class="memory-header">
+                        <h2>Memory Dashboard</h2>
+                        <div class="memory-actions">
+                            <button class="btn" @click="loadRecent(true)" :disabled="isLoading">Refresh</button>
+                            <button class="btn btn-warn" @click="deleteSelected" :disabled="!hasSelection">
+                                Delete Selected
+                            </button>
+                            <button class="btn btn-danger" @click="reindex" :disabled="isReindexing">
+                                Reindex
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="memory-stats" x-show="stats">
+                        <div class="memory-stat">
+                            <span class="label">Total</span>
+                            <span class="value" x-text="stats?.total_count ?? 0"></span>
+                        </div>
+                        <div class="memory-stat">
+                            <span class="label">With Vectors</span>
+                            <span class="value" x-text="stats?.with_vectors ?? 0"></span>
+                        </div>
+                        <div class="memory-stat">
+                            <span class="label">Without Vectors</span>
+                            <span class="value" x-text="stats?.without_vectors ?? 0"></span>
+                        </div>
+                        <div class="memory-stat">
+                            <span class="label">Last Update</span>
+                            <span class="value" x-text="stats?.last_ts_iso ? readableTimestamp(stats.last_ts_iso) : '—'"></span>
+                        </div>
+                    </div>
+
+                    <div class="memory-controls">
+                        <label>
+                            Session
+                            <select x-model="session" @change="changeSession">
+                                <template x-for="sessionName in sessions" :key="sessionName">
+                                    <option :value="sessionName" x-text="sessionName"></option>
+                                </template>
+                                <template x-if="sessions.length === 0">
+                                    <option value="default">default</option>
+                                </template>
+                            </select>
+                        </label>
+                        <label>
+                            Query
+                            <input type="text" x-model="query" placeholder="Search memories"
+                                @keydown.enter.prevent="searchMemories(true)">
+                        </label>
+                        <label x-show="mode === 'search'">
+                            Top K
+                            <input type="number" min="1" x-model.number="topK">
+                        </label>
+                        <label x-show="mode !== 'search'">
+                            Page Size
+                            <input type="number" min="1" x-model.number="limit">
+                        </label>
+                        <button class="btn" @click="searchMemories(true)" :disabled="isLoading">
+                            <span x-show="mode === 'search'">Search</span>
+                            <span x-show="mode !== 'search'">Apply</span>
+                        </button>
+                        <button class="btn" @click="loadRecent(true)" :disabled="isLoading">Recent</button>
+                    </div>
+
+                    <div class="memory-table-wrapper">
+                        <div class="memory-loading" x-show="isLoading">Loading memories…</div>
+                        <div class="memory-empty" x-show="!isLoading && items.length === 0">
+                            No memory entries found for this session.
+                        </div>
+                        <table class="memory-table" x-show="!isLoading && items.length > 0">
+                            <thead>
+                                <tr>
+                                    <th></th>
+                                    <th>ID</th>
+                                    <th>Timestamp</th>
+                                    <th>Session</th>
+                                    <th>Kind</th>
+                                    <th>Tags</th>
+                                    <th>Content</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="item in items" :key="item.id">
+                                    <tr :class="{'selected': isSelected(item.id)}">
+                                        <td>
+                                            <input type="checkbox" :checked="isSelected(item.id)"
+                                                @change="toggleSelect(item.id)">
+                                        </td>
+                                        <td>
+                                            <div class="memory-id" x-text="item.id"></div>
+                                        </td>
+                                        <td x-text="readableTimestamp(item.ts)"></td>
+                                        <td x-text="item.meta?.session || session"></td>
+                                        <td x-text="item.kind"></td>
+                                        <td>
+                                            <span class="memory-tag"
+                                                x-text="Array.isArray(item.tags) ? item.tags.join(', ') : ''"></span>
+                                        </td>
+                                        <td>
+                                            <div class="memory-content" x-text="ellipsize(item.text)"></div>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-small" @click.prevent="deleteItem(item.id)">
+                                                Delete
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="memory-pagination" x-show="items.length > 0">
+                        <div class="memory-page-info">
+                            <span x-text="`${pageStart} – ${pageEnd} of ${mode === 'search' ? topK : totalCount}`"></span>
+                        </div>
+                        <div class="memory-page-controls">
+                            <button class="btn" @click="prevPage" :disabled="!canPrev">Previous</button>
+                            <button class="btn" @click="nextPage" :disabled="!canNext">Next</button>
                         </div>
                     </div>
                 </div>
