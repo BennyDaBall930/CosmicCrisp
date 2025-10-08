@@ -7,6 +7,7 @@ import io
 import logging
 import threading
 import sys
+import types
 from typing import Iterable
 
 import numpy as np
@@ -21,6 +22,21 @@ _DEFAULT_VOICE = "am_puck,am_onyx"
 _DEFAULT_SPEED = 1.1
 _DEFAULT_SAMPLE_RATE = 24_000
 
+# PREVENT espeakng_loader from loading problematic CI paths
+# Monkey patch BEFORE any kokoro/phonemizer imports can trigger it
+if 'espeakng_loader' not in sys.modules:
+    import os
+    # First set environment to override any CI paths
+    os.environ["ESPEAKNG_DATA_PATH"] = "/opt/homebrew/share/espeak-ng-data"
+    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = "/opt/homebrew/lib/libespeak-ng.dylib"
+    os.environ["PHONEMIZER_ESPEAK_PATH"] = "/opt/homebrew/bin/espeak-ng"
+
+    # Create mock module to intercept espeakng_loader imports
+    mock_espeakng_loader = types.ModuleType('espeakng_loader')
+    mock_espeakng_loader.get_data_path = lambda: "/opt/homebrew/share/espeak-ng-data"
+    mock_espeakng_loader.get_library_path = lambda: "/opt/homebrew/lib/libespeak-ng.dylib"
+    sys.modules['espeakng_loader'] = mock_espeakng_loader
+
 
 def _ensure_pipeline():
     global _pipeline
@@ -29,6 +45,24 @@ def _ensure_pipeline():
     with _lock:
         if _pipeline is not None:
             return _pipeline
+
+        # CRITICAL: Force correct espeak paths BEFORE any kokoro/phonemizer imports
+        # This must be done first, before any imports trigger the CI path lookup
+        import os
+        os.environ.setdefault("ESPEAKNG_DATA_PATH", "/opt/homebrew/share/espeak-ng-data")
+        os.environ.setdefault("PHONEMIZER_ESPEAK_LIBRARY", "/opt/homebrew/lib/libespeak-ng.dylib")
+        os.environ.setdefault("PHONEMIZER_ESPEAK_PATH", "/opt/homebrew/bin/espeak-ng")
+
+        # Monkey patch the problematic paths at the sys.modules level BEFORE any imports
+        import sys
+        if 'espeakng_loader' not in sys.modules:
+            import types
+            mock_module = types.ModuleType('espeakng_loader')
+            mock_module.get_data_path = staticmethod(lambda: "/opt/homebrew/share/espeak-ng-data")
+            mock_module.get_library_path = staticmethod(lambda: "/opt/homebrew/lib/libespeak-ng.dylib")
+            # Add to sys.modules BEFORE phonemizer gets imported
+            sys.modules['espeakng_loader'] = mock_module
+
         original_exit = sys.exit
 
         def _exit_guard(code: object = None):  # type: ignore[override]
@@ -41,39 +75,103 @@ def _ensure_pipeline():
             # exist in newer phonemizer versions. Provide a no-op shim so import succeeds.
             try:
                 from phonemizer.backend.espeak.wrapper import EspeakWrapper  # type: ignore
-                import espeakng_loader  # type: ignore
                 import os
-                # Ensure library and data path env hints are present before kokoro/misaki import
-                os.environ.setdefault(
-                    "PHONEMIZER_ESPEAK_LIBRARY", str(espeakng_loader.get_library_path())
-                )
-                os.environ.setdefault(
-                    "ESPEAKNG_DATA_PATH", str(espeakng_loader.get_data_path())
-                )
+                # Try multiple espeak-ng data path locations
+                possible_data_paths = [
+                    "/opt/homebrew/share/espeak-ng-data",
+                    "/opt/homebrew/Cellar/espeak-ng/1.52.0/share/espeak-ng-data",
+                    "/usr/local/share/espeak-ng-data",
+                    "/usr/share/espeak-ng-data",
+                    os.environ.get("ESPEAKNG_DATA_PATH"),  # From macOS run script
+                ]
+
+                # Find the first valid espeak-ng data path
+                data_path = None
+                for path in possible_data_paths:
+                    if path and os.path.exists(path):
+                        data_path = path
+                        break
+
+                if data_path:
+                    os.environ.setdefault("ESPEAKNG_DATA_PATH", data_path)
+                    # Also try setting PHONEMIZER_ESPEAK_LIBRARY if not set
+                    if "PHONEMIZER_ESPEAK_LIBRARY" not in os.environ:
+                        # Try common espeak-ng library locations
+                        possible_lib_paths = [
+                            "/opt/homebrew/lib/libespeak-ng.dylib",
+                            "/usr/local/lib/libespeak-ng.dylib",
+                            "/usr/lib/libespeak-ng.dylib",
+                        ]
+                        for lib_path in possible_lib_paths:
+                            if os.path.exists(lib_path):
+                                os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = lib_path
+                                break
+
                 if not hasattr(EspeakWrapper, "set_data_path"):
                     def _shim_set_data_path(path):
                         os.environ["ESPEAKNG_DATA_PATH"] = str(path)
                     EspeakWrapper.set_data_path = staticmethod(_shim_set_data_path)  # type: ignore[attr-defined]
 
-                # Patch data path resolver to prefer ESPEAKNG_DATA_PATH or loader path
+                # Patch data path resolver to use our validated path - more aggressive patching
                 try:
                     import pathlib
                     def _patched_fetch_version_and_path(self):  # type: ignore[no-redef]
                         try:
-                            version, _ = self._espeak.info()
-                            dp = os.environ.get("ESPEAKNG_DATA_PATH", str(espeakng_loader.get_data_path()))
-                            self._data_path = pathlib.Path(dp)
-                            version = version.decode().strip().split(' ')[0].replace('-dev', '')
-                            self._version = tuple(int(v) for v in version.split('.'))
+                            # Force our validated data path
+                            if hasattr(self, '_espeak') and self._espeak:
+                                try:
+                                    # Set data path directly before getting info
+                                    data_path = "/opt/homebrew/share/espeak-ng-data"  # Direct brew path
+                                    os.environ["ESPEAKNG_DATA_PATH"] = data_path
+                                    self._data_path = pathlib.Path(data_path)
+                                    # Try to get version from espeak
+                                    version, _ = self._espeak.info()
+                                    version = version.decode().strip().split(' ')[0].replace('-dev', '')
+                                    self._version = tuple(int(v) for v in version.split('.'))
+                                except Exception:
+                                    # If that fails, set basic fallback
+                                    self._version = (1, 52, 0)
+                                return
                         except Exception:
-                            self._data_path = pathlib.Path(espeakng_loader.get_data_path())
-                            self._version = (1, 52, 0)
-                    EspeakWrapper._fetch_version_and_path = _patched_fetch_version_and_path  # type: ignore[attr-defined]
-                except Exception:
+                            pass
+                        # Ultimate fallback
+                        self._version = (1, 52, 0)
+
+                    # Try to patch the method
+                    if hasattr(EspeakWrapper, '_fetch_version_and_path'):
+                        EspeakWrapper._fetch_version_and_path = _patched_fetch_version_and_path
+                    else:
+                        # Alternative patching approach
+                        setattr(EspeakWrapper, '_fetch_version_and_path', _patched_fetch_version_and_path)
+                except Exception as e:
+                    logger.warning(f"Failed to patch EspeakWrapper: {e}")
                     pass
-            except Exception:
+            except Exception as e:
+                # If espeak setup fails completely, log but continue - Kokoro might still work
+                logger.warning(f"Espeak setup failed, Kokoro may not work: {e}")
                 pass
+
+            # Force the correct espeak data path before importing Kokoro
+            # This is critical to prevent the CI path error
+            os.environ["ESPEAKNG_DATA_PATH"] = "/opt/homebrew/share/espeak-ng-data"
+            if os.path.exists("/opt/homebrew/lib/libespeak-ng.dylib"):
+                os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = "/opt/homebrew/lib/libespeak-ng.dylib"
+
+            # Try to monkey patch the data path lookup at the module level
+            try:
+                import espeakng_loader  # This is causing the issue
+                # Replace the problematic functions with our own
+                espeakng_loader.get_data_path = lambda: "/opt/homebrew/share/espeak-ng-data"
+                espeakng_loader.get_library_path = lambda: "/opt/homebrew/lib/libespeak-ng.dylib"
+                logger.info("Successfully patched espeakng_loader paths")
+            except Exception as e:
+                logger.warning(f"Could not patch espeakng_loader: {e}")
+
             from kokoro import KPipeline
+            pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
+            _pipeline = pipeline
+            PrintStyle(level=logging.DEBUG).print("Kokoro TTS model loaded")
+            return _pipeline
         except SystemExit as exc:
             logger.error("Kokoro initialization triggered SystemExit", exc_info=exc)
             raise RuntimeError(str(exc)) from exc
@@ -81,10 +179,6 @@ def _ensure_pipeline():
             logger.error("Failed to import kokoro", exc_info=exc)
             # Surface the underlying cause to aid debugging in preload/logs
             raise RuntimeError(str(exc)) from exc
-            pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
-            _pipeline = pipeline
-            PrintStyle(level=logging.DEBUG).print("Kokoro TTS model loaded")
-            return _pipeline
         finally:
             sys.exit = original_exit
 

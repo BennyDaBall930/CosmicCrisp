@@ -224,8 +224,18 @@ export async function playStreamedTTS({
   });
 
   if (!response.ok || !response.body) {
+    let errorMessage = "TTS stream failed";
+    try {
+      const errorText = await response.text();
+      if (errorText) {
+        errorMessage = `TTS server error: ${errorText}`;
+        log("Server error response:", errorText);
+      }
+    } catch (err) {
+      log("Could not read server error response:", err);
+    }
     await cleanup({ immediate: true });
-    throw new Error("TTS stream failed");
+    throw new Error(errorMessage);
   }
 
   const reader = response.body.getReader();

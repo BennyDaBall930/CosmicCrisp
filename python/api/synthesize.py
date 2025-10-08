@@ -60,7 +60,7 @@ class Synthesize(ApiHandler):
     async def process(self, input: dict, request: Request) -> dict | Response:
         text = input.get("text", "")
         tts_settings = _tts_settings()
-        engine = str(tts_settings.get("engine", "chatterbox")).lower()
+        engine = input.get("engine", str(tts_settings.get("engine", "chatterbox"))).lower()
         style = input.get("style", {}) or {}
         filtered_style = {k: v for k, v in style.items() if v is not None}
         if "voice_wav_path" in filtered_style and "speaker_wav_path" not in filtered_style:

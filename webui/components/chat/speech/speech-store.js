@@ -294,6 +294,9 @@ const model = {
         return;
       } catch (error) {
         console.error(error);
+        if (this.showsEngineBanner !== false) {
+          this.showEngineBanner("chatterbox", error);
+        }
         return await this.speakWithBrowser(text, waitForPrevious, terminator);
       }
     }
@@ -304,6 +307,9 @@ const model = {
         return;
       } catch (error) {
         console.error(error);
+        if (this.showsEngineBanner !== false) {
+          this.showEngineBanner("xtts", error);
+        }
         return await this.speakWithBrowser(text, waitForPrevious, terminator);
       }
     }
@@ -891,6 +897,23 @@ const model = {
     return this.microphoneInput
       ? this.microphoneInput.requestPermission()
       : MicrophoneInput.prototype.requestPermission.call(null);
+  },
+
+  // Show engine requirement banners when engines fail
+  showEngineBanner(engine, error) {
+    const engineMessages = {
+      chatterbox: "Chatterbox TTS requires Python 3.10 or 3.11. Consider using browser TTS (no setup required) or set up XTTS sidecar for better quality.",
+      xtts: "XTTS TTS requires a running sidecar service. Run './setup.sh && ./run.sh' to start the sidecar, or use browser TTS (no setup required).",
+    };
+
+    const message = engineMessages[engine.toLowerCase()] ||
+      `${engine} TTS engine failed. Falling back to browser TTS (no setup required). Details: ${error?.message || error}`;
+
+    if (window.toast) {
+      window.toast(message, "warning", 8000);
+    } else {
+      console.warn(`[TTS] Engine requirement: ${message}`);
+    }
   },
 };
 
