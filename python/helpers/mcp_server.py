@@ -297,20 +297,16 @@ class DynamicMcpProxy:
         http_path = f"/t-{self.token}/http"
         message_path = f"/t-{self.token}/messages/"
 
-        # Update settings in the MCP server instance if provided
-        mcp_server.settings.message_path = message_path
-        mcp_server.settings.sse_path = sse_path
-
-        # Create new MCP apps with updated settings
+        # Create new MCP apps with updated settings (FastMCP >= 2.10 API)
         with self._lock:
+            # Build SSE app without auth by default; auth can be layered via middleware later.
             self.sse_app = create_sse_app(
                 server=mcp_server,
-                message_path=mcp_server.settings.message_path,
-                sse_path=mcp_server.settings.sse_path,
-                auth_server_provider=mcp_server._auth_server_provider,
-                auth_settings=mcp_server.settings.auth,
-                debug=mcp_server.settings.debug,
-                routes=mcp_server._additional_http_routes,
+                message_path=message_path,
+                sse_path=sse_path,
+                auth=None,
+                debug=False,
+                routes=None,
                 middleware=[Middleware(BaseHTTPMiddleware, dispatch=mcp_middleware)],
             )
 
@@ -318,18 +314,17 @@ class DynamicMcpProxy:
             # doesn't work properly in our Flask/Werkzeug environment
             self.http_app = self._create_custom_http_app(
                 http_path,
-                mcp_server._auth_server_provider,
-                mcp_server.settings.auth,
-                mcp_server.settings.debug,
-                mcp_server._additional_http_routes,
+                auth_server_provider=None,
+                auth_settings=None,
+                debug=False,
+                routes=None,
             )
 
     def _create_custom_http_app(self, streamable_http_path, auth_server_provider, auth_settings, debug, routes):
         """Create a custom HTTP app that manages the session manager manually."""
-        from fastmcp.server.http import setup_auth_middleware_and_routes, create_base_app
+        from fastmcp.server.http import create_base_app
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
         from starlette.routing import Mount
-        from mcp.server.auth.middleware.bearer_auth import RequireAuthMiddleware
         import anyio
 
         server_routes = []
@@ -359,29 +354,13 @@ class DynamicMcpProxy:
             if self.http_session_manager:
                 await self.http_session_manager.handle_request(scope, receive, send)
 
-        # Get auth middleware and routes
-        auth_middleware, auth_routes, required_scopes = setup_auth_middleware_and_routes(
-            auth_server_provider, auth_settings
+        # Add StreamableHTTP routes (no-auth by default)
+        server_routes.append(
+            Mount(
+                streamable_http_path,
+                app=handle_streamable_http,
+            )
         )
-
-        server_routes.extend(auth_routes)
-        server_middleware.extend(auth_middleware)
-
-        # Add StreamableHTTP routes with or without auth
-        if auth_server_provider:
-            server_routes.append(
-                Mount(
-                    streamable_http_path,
-                    app=RequireAuthMiddleware(handle_streamable_http, required_scopes),
-                )
-            )
-        else:
-            server_routes.append(
-                Mount(
-                    streamable_http_path,
-                    app=handle_streamable_http,
-                )
-            )
 
         # Add custom routes with lowest precedence
         if routes:
@@ -394,7 +373,7 @@ class DynamicMcpProxy:
         return create_base_app(
             routes=server_routes,
             middleware=server_middleware,
-            debug=debug,
+            debug=bool(debug),
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

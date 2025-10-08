@@ -101,6 +101,15 @@ export BROWSER_USE_CONFIG_DIR="${PROJECT_DIR}/tmp/browseruse"
 export XDG_CONFIG_HOME="${PROJECT_DIR}/tmp/xdg"
 export WEB_UI_HOST="127.0.0.1"
 
+# If espeak-ng is installed via Homebrew, hint phonemizer where to find it for Kokoro/misaki
+ESPEAK_PREFIX="/opt/homebrew"
+if [ -f "${ESPEAK_PREFIX}/lib/libespeak-ng.dylib" ]; then
+  export PHONEMIZER_ESPEAK_LIBRARY="${ESPEAK_PREFIX}/lib/libespeak-ng.dylib"
+fi
+if [ -d "${ESPEAK_PREFIX}/share/espeak-ng-data" ]; then
+  export ESPEAKNG_DATA_PATH="${ESPEAK_PREFIX}/share/espeak-ng-data"
+fi
+
 # Ensure SearXNG has a non-default secret to avoid startup exit
 if [ -z "${SEARXNG_SECRET:-}" ]; then
   SEARXNG_SECRET=$(python3 - <<'PY'
@@ -267,8 +276,9 @@ from python.helpers import dotenv
 dotenv.save_dotenv_value('SEARXNG_URL', 'http://127.0.0.1:'+str(${SEARXNG_PORT})+'/search')
 PY
 
-    # Ensure SearXNG dependencies are installed (check for httpx)
-    if ! python3 -c "import httpx" 2>/dev/null; then
+    # Ensure SearXNG dependencies are installed. Check for whitenoise specifically,
+    # since httpx may already exist from root deps and would skip required packages.
+    if ! python3 -c "import whitenoise" 2>/dev/null; then
         echo -e "${YELLOW}Installing SearXNG dependencies...${NC}"
         pip install -r searxng/requirements.txt -r searxng/requirements-server.txt
     fi
@@ -436,6 +446,11 @@ APPLESCRIPT
 start_searxng_background() {
     echo -e "${GREEN}Starting SearXNG in background (no Terminal)...${NC}"
     export SEARXNG_SETTINGS_PATH="${PROJECT_DIR}/searxng/settings.yml"
+    # Make sure required Python packages for SearXNG are present when launching in background
+    if ! python3 -c "import whitenoise" 2>/dev/null; then
+        echo -e "${YELLOW}Installing SearXNG dependencies (background)...${NC}"
+        pip install -r searxng/requirements.txt -r searxng/requirements-server.txt
+    fi
     # Choose port: prefer default, otherwise first free
     if port_in_use "$SEARXNG_PORT_DEFAULT"; then
         SEARXNG_PORT=$(find_free_port "$SEARXNG_PORT_DEFAULT")

@@ -86,7 +86,13 @@ def _registry_snapshot() -> Dict[str, Any]:
     }
 
 
-router = APIRouter(prefix="/runtime")
+# NOTE:
+# The FastAPI app is mounted under the "/runtime" path by the Flask server
+# (see run_ui.py). Using a router prefix of "/runtime" here would create
+# external endpoints at "/runtime/runtime/..." which breaks the web UI calls
+# that target "/runtime/...". To keep external URLs stable, we avoid any
+# prefix here and let the outer mount provide the single "/runtime" segment.
+router = APIRouter()
 
 
 @router.post("/chat", tags=["Chat"])
@@ -170,7 +176,7 @@ async def tools_invoke_endpoint(payload: ToolInvokeRequest) -> Dict[str, Any]:
 
 
 @router.get("/admin/memory", tags=["Admin"], dependencies=[Depends(require_admin_auth)])
-async def admin_memory_endpoint(query: MemoryQuery) -> Dict[str, Any]:
+async def admin_memory_endpoint(query: MemoryQuery = Depends()) -> Dict[str, Any]:
     store = memory()
     await store.enter(query.session)
 
@@ -218,6 +224,12 @@ async def admin_memory_stats_endpoint() -> Dict[str, Any]:
     stats["last_ts_iso"] = (
         datetime.fromtimestamp(last_ts, tz=timezone.utc).isoformat()
         if last_ts
+        else None
+    )
+    last_reindex_ts = stats.get("last_reindex_ts", 0.0) or 0.0
+    stats["last_reindex_iso"] = (
+        datetime.fromtimestamp(last_reindex_ts, tz=timezone.utc).isoformat()
+        if last_reindex_ts
         else None
     )
     return {"stats": stats}

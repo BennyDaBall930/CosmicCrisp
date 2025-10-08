@@ -95,6 +95,27 @@ class Memory:
             if limit and len(results) >= limit:
                 break
 
+        if not results and query:
+            tokens = [tok for tok in query.lower().strip().split() if tok]
+            if tokens:
+                fallback_docs = await self.store.all()
+                for item in fallback_docs:
+                    text = str(item.get("text", ""))
+                    text_lower = text.lower()
+                    if not all(tok in text_lower for tok in tokens):
+                        continue
+                    match_ratio = sum(tok in text_lower for tok in tokens) / len(tokens)
+                    score_hint = max(match_ratio, threshold) if threshold else match_ratio
+                    item.setdefault("meta", {})
+                    item["score"] = max(score_hint, 0.1)
+                    doc = self._to_document(item)
+                    doc.metadata["score"] = doc.metadata.get("score", score_hint)
+                    results.append(doc)
+                    if limit and len(results) >= limit:
+                        break
+                if limit:
+                    results = results[:limit]
+
         return results
 
     async def search_by_metadata(self, filter: str, limit: int = 0) -> List[Document]:

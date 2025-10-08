@@ -36,10 +36,27 @@ class XTTSSettings(TypedDict, total=False):
     join_silence_ms: int
 
 
+class PiperVCSettings(TypedDict, total=False):
+    piper_bin: str
+    piper_model: str
+    sample_rate: int
+    max_chars: int
+    join_silence_ms: int
+    target_voice_wav: Optional[str]
+
+
+class KokoroSettings(TypedDict, total=False):
+    voice: str
+    speed: float
+    sample_rate: int
+
+
 class TTSSettings(TypedDict):
-    engine: Literal["chatterbox", "xtts", "browser"]
+    engine: Literal["chatterbox", "xtts", "piper_vc", "kokoro", "browser"]
     chatterbox: ChatterboxSettings
     xtts: XTTSSettings
+    piper_vc: PiperVCSettings
+    kokoro: KokoroSettings
 
 
 class Settings(TypedDict):
@@ -1038,9 +1055,17 @@ def convert_out(settings: Settings) -> SettingsOutput:
     tts_settings = settings["tts"]
     chatterbox_settings = tts_settings["chatterbox"]
     xtts_settings = tts_settings["xtts"]
+    kokoro_settings = tts_settings.get("kokoro", {})
+    if not isinstance(kokoro_settings, dict):
+        kokoro_settings = {}
+    piper_vc_settings = tts_settings.get("piper_vc", {})
+    if not isinstance(piper_vc_settings, dict):
+        piper_vc_settings = {}
     current_engine = str(tts_settings.get("engine", "chatterbox"))
     show_chatterbox = current_engine == "chatterbox"
     show_xtts = current_engine == "xtts"
+    show_kokoro = current_engine == "kokoro"
+    show_piper_vc = current_engine == "piper_vc"
 
     tts_fields: list[SettingsField] = [
         {
@@ -1052,6 +1077,8 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "options": [
                 {"value": "chatterbox", "label": "Chatterbox"},
                 {"value": "xtts", "label": "Coqui XTTS"},
+                {"value": "kokoro", "label": "Kokoro"},
+                {"value": "piper_vc", "label": "Piper + OpenVoice (VC)"},
                 {"value": "browser", "label": "Browser"},
             ],
         },
@@ -1200,6 +1227,78 @@ def convert_out(settings: Settings) -> SettingsOutput:
             "type": "number",
             "value": xtts_settings.get("join_silence_ms", 80),
             "hidden": not show_xtts,
+        },
+        {
+            "id": "tts_piper_vc_piper_bin",
+            "title": "Piper binary",
+            "description": "Path or name of Piper executable (in PATH).",
+            "type": "text",
+            "value": piper_vc_settings.get("piper_bin", "piper"),
+            "hidden": not show_piper_vc,
+        },
+        {
+            "id": "tts_piper_vc_piper_model",
+            "title": "Piper model (.onnx)",
+            "description": "Absolute path to Piper ONNX voice model.",
+            "type": "text",
+            "value": piper_vc_settings.get("piper_model", ""),
+            "hidden": not show_piper_vc,
+        },
+        {
+            "id": "tts_piper_vc_sample_rate",
+            "title": "Output sample rate",
+            "description": "Sample rate for generated audio (matches Piper voice).",
+            "type": "number",
+            "value": piper_vc_settings.get("sample_rate", 22050),
+            "hidden": not show_piper_vc,
+        },
+        {
+            "id": "tts_piper_vc_max_chars",
+            "title": "Chunk size (characters)",
+            "description": "Maximum characters per synthesis chunk.",
+            "type": "number",
+            "value": piper_vc_settings.get("max_chars", 280),
+            "hidden": not show_piper_vc,
+        },
+        {
+            "id": "tts_piper_vc_join_silence_ms",
+            "title": "Join gap (ms)",
+            "description": "Silence inserted between concatenated chunks.",
+            "type": "number",
+            "value": piper_vc_settings.get("join_silence_ms", 80),
+            "hidden": not show_piper_vc,
+        },
+        {
+            "id": "tts_piper_vc_target_voice_wav",
+            "title": "Reference voice path",
+            "description": "Default 5–10s reference clip for voice cloning.",
+            "type": "text",
+            "value": piper_vc_settings.get("target_voice_wav", ""),
+            "hidden": not show_piper_vc,
+        },
+        {
+            "id": "tts_kokoro_voice",
+            "title": "Kokoro voice preset",
+            "description": "Comma-separated Kokoro voice identifiers (e.g. am_puck,am_onyx).",
+            "type": "text",
+            "value": kokoro_settings.get("voice", "am_puck,am_onyx"),
+            "hidden": not show_kokoro,
+        },
+        {
+            "id": "tts_kokoro_speed",
+            "title": "Playback speed",
+            "description": "Adjust Kokoro speaking rate (default 1.1).",
+            "type": "number",
+            "value": kokoro_settings.get("speed", 1.1),
+            "hidden": not show_kokoro,
+        },
+        {
+            "id": "tts_kokoro_sample_rate",
+            "title": "Output sample rate",
+            "description": "Sample rate for generated audio (default 24000).",
+            "type": "number",
+            "value": kokoro_settings.get("sample_rate", 24000),
+            "hidden": not show_kokoro,
         },
     ]
 
@@ -1592,10 +1691,14 @@ def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None
         "engine": default_tts["engine"],
         "chatterbox": {**default_tts["chatterbox"]},
         "xtts": {**default_tts["xtts"]},
+        "piper_vc": {**default_tts["piper_vc"]},
+        "kokoro": {**default_tts["kokoro"]},
     }
     merged_tts.update(current_tts)
     chatterbox = {**merged_tts.get("chatterbox", {})}
     xtts_settings = {**merged_tts.get("xtts", {})}
+    piper_vc = {**merged_tts.get("piper_vc", {})}
+    kokoro_settings = {**merged_tts.get("kokoro", {})}
 
     if field_id == "tts_engine":
         merged_tts["engine"] = value or default_tts["engine"]
@@ -1607,6 +1710,14 @@ def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None
         key = field_id.removeprefix("tts_xtts_")
         xtts_settings[key] = value
         merged_tts["xtts"] = xtts_settings
+    elif field_id.startswith("tts_piper_vc_"):
+        key = field_id.removeprefix("tts_piper_vc_")
+        piper_vc[key] = value
+        merged_tts["piper_vc"] = piper_vc
+    elif field_id.startswith("tts_kokoro_"):
+        key = field_id.removeprefix("tts_kokoro_")
+        kokoro_settings[key] = value
+        merged_tts["kokoro"] = kokoro_settings
 
     settings_dict["tts"] = merged_tts  # type: ignore
 
@@ -1734,6 +1845,48 @@ def _normalize_tts_settings(value: dict[str, Any], default: dict[str, Any]) -> d
         normalized_xtts[key] = raw if raw is not None else default_val
 
     result["xtts"] = normalized_xtts
+
+    default_kokoro = default.get("kokoro", {})
+    incoming_kokoro = {}
+    if isinstance(value, dict):
+        incoming_kokoro = value.get("kokoro", {}) if isinstance(value.get("kokoro"), dict) else {}
+
+    normalized_kokoro: dict[str, Any] = {}
+    for key, default_val in default_kokoro.items():
+        raw = incoming_kokoro.get(key, default_val)
+        if key == "voice":
+            normalized_kokoro[key] = str(raw).strip() if raw else (default_val or "")
+            continue
+        if key == "speed":
+            normalized_kokoro[key] = _parse_float(raw, float(default_val))
+            continue
+        if key == "sample_rate":
+            normalized_kokoro[key] = _parse_int(raw, int(default_val))
+            continue
+        normalized_kokoro[key] = raw if raw is not None else default_val
+
+    result["kokoro"] = normalized_kokoro
+
+    default_piper = default.get("piper_vc", {})
+    incoming_piper = {}
+    if isinstance(value, dict):
+        incoming_piper = value.get("piper_vc", {}) if isinstance(value.get("piper_vc"), dict) else {}
+
+    normalized_piper: dict[str, Any] = {}
+    for key, default_val in default_piper.items():
+        raw = incoming_piper.get(key, default_val)
+        if key in {"piper_bin", "piper_model"}:
+            normalized_piper[key] = str(raw).strip() if raw else (default_val or "")
+            continue
+        if key == "target_voice_wav":
+            normalized_piper[key] = (str(raw).strip() if isinstance(raw, str) else raw) or None
+            continue
+        if isinstance(default_val, int) and type(default_val) is not bool:
+            normalized_piper[key] = _parse_int(raw, default_val)
+            continue
+        normalized_piper[key] = raw if raw is not None else default_val
+
+    result["piper_vc"] = normalized_piper
     return result
 
 
@@ -1932,6 +2085,19 @@ def get_default_settings() -> Settings:
                 "sample_rate": 24_000,
                 "max_chars": 400,
                 "join_silence_ms": 80,
+            },
+            "piper_vc": {
+                "piper_bin": "piper",
+                "piper_model": "",
+                "sample_rate": 22_050,
+                "max_chars": 280,
+                "join_silence_ms": 80,
+                "target_voice_wav": None,
+            },
+            "kokoro": {
+                "voice": "am_puck,am_onyx",
+                "speed": 1.1,
+                "sample_rate": 24_000,
             },
         },
         mcp_servers='{\n    "mcpServers": {}\n}',

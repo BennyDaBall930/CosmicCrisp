@@ -1,4 +1,10 @@
-"""Coqui XTTS text-to-speech backend integration."""
+"""Coqui XTTS text-to-speech backend integration with sidecar fallback.
+
+If the local Coqui TTS import fails (e.g., Python 3.12 incompatibility),
+this module will transparently fall back to calling a local sidecar
+running under Python 3.11 via HTTP. Configure the sidecar URL via
+`TTS_SIDECAR_URL` (default: http://127.0.0.1:7055).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,13 +16,19 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Mapping, Optional
+import os
+import json
+import urllib.request
+import urllib.error
 
 import numpy as np
 import torch
 import torchaudio as ta
 
+COQUI_TTS_AVAILABLE = False
 try:
-    from TTS.api import TTS as CoquiTTS
+    from TTS.api import TTS as CoquiTTS  # type: ignore
+
     try:  # torch >= 2.6 requires allow-listing custom configs when weights_only=True
         from TTS.tts.configs.xtts_config import XttsConfig, XttsAudioConfig  # type: ignore
         from TTS.tts.models.xtts import XttsArgs  # type: ignore
@@ -27,10 +39,10 @@ try:
             add_safe_globals([XttsConfig, XttsAudioConfig, BaseDatasetConfig, XttsArgs])
     except Exception:
         pass
-except ImportError as exc:  # pragma: no cover - surfaced at runtime
-    raise RuntimeError(
-        "TTS is required for the Coqui XTTS backend. Install with `pip install TTS`"
-    ) from exc
+
+    COQUI_TTS_AVAILABLE = True
+except Exception:
+    COQUI_TTS_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +72,19 @@ class XTTSConfig:
     join_silence_ms: int = 80
 
 
+def _post_json(url: str, payload: dict, timeout: float = 180.0) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"sidecar HTTP {resp.status}")
+        raw = resp.read()
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"Invalid sidecar response: {e}")
+
+
 class XTTSBackend:
     """Adapter around Coqui XTTS."""
 
@@ -75,6 +100,8 @@ class XTTSBackend:
             "loading XTTS backend",
             extra={"model_id": self.cfg.model_id, "device": self.device},
         )
+        if not COQUI_TTS_AVAILABLE:
+            raise RuntimeError("Coqui TTS is not available in this environment")
         model = CoquiTTS(model_name=self.cfg.model_id, progress_bar=False)
         target = self.device
         if target == "mps":  # torch.compile not yet supported; fall back gracefully
@@ -245,6 +272,236 @@ class XTTSBackend:
                 torch.mps.empty_cache()
 
 
+class SidecarXTTSBackend:
+    """HTTP client backend for XTTS via local sidecar."""
+
+    def __init__(self, cfg: "XTTSConfig"):
+        self.cfg = cfg
+        self.sample_rate = cfg.sample_rate
+        self._base_url = os.environ.get("TTS_SIDECAR_URL", "http://127.0.0.1:7055")
+        self._attempted_autostart = False
+        # Do a quick non-blocking health probe; full autostart handled on first request
+        try:
+            self._health_check(timeout=0.5)
+        except Exception:
+            pass
+
+    def _repo_root(self) -> str:
+        try:
+            from pathlib import Path
+
+            here = Path(__file__).resolve()
+            for p in [*here.parents]:
+                if (p / "run.sh").exists() and (p / "sidecar" / "app.py").exists():
+                    return str(p)
+        except Exception:
+            pass
+        return os.getcwd()
+
+    def _health_check(self, timeout: float = 1.5) -> bool:
+        url = f"{self._base_url.rstrip('/')}/healthz"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+
+    def _ensure_running(self) -> None:
+        try:
+            if self._health_check(timeout=1.0):
+                return
+        except Exception:
+            pass
+
+        if os.environ.get("A0_DISABLE_SIDECAR_AUTOSTART") in {"1", "true", "TRUE", "True"}:
+            raise RuntimeError(
+                "TTS sidecar is not running at "
+                f"{self._base_url}. Set TTS engine to 'browser' or start the sidecar: "
+                "./setup.sh && ./run.sh"
+            )
+
+        if self._attempted_autostart:
+            # Avoid repeated spawns
+            raise RuntimeError(
+                f"Failed to reach TTS sidecar at {self._base_url} after autostart"
+            )
+
+        self._attempted_autostart = True
+
+        # Try to start the sidecar in background using the project script
+        root = self._repo_root()
+        run_sh = os.path.join(root, "run.sh")
+        if not os.path.exists(run_sh):
+            raise RuntimeError(
+                "TTS sidecar not reachable, and run.sh not found to auto-start it"
+            )
+        try:
+            import subprocess, sys
+
+            # Launch detached to persist beyond current request
+            subprocess.Popen(
+                ["bash", "-lc", "./run.sh"],
+                cwd=root,
+                stdout=open(os.path.join(root, "logs", "tts_sidecar.out"), "ab"),
+                stderr=open(os.path.join(root, "logs", "tts_sidecar.err"), "ab"),
+                start_new_session=True,
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to auto-start sidecar: {e}")
+
+        # Wait for health to go green
+        import time as _time
+
+        deadline = _time.time() + 90.0
+        last_err: Optional[Exception] = None
+        while _time.time() < deadline:
+            try:
+                if self._health_check(timeout=1.5):
+                    return
+            except Exception as he:
+                last_err = he
+            _time.sleep(1.0)
+        msg = (
+            f"Sidecar failed to become healthy at {self._base_url} within timeout. "
+            "Check logs/tts_sidecar.err and run ./run.sh manually."
+        )
+        if last_err:
+            msg += f" Last error: {last_err}"
+        raise RuntimeError(msg)
+
+    def update_config(self, cfg: "XTTSConfig") -> None:
+        self.cfg = replace(
+            self.cfg,
+            speaker=cfg.speaker,
+            language=cfg.language,
+            speaker_wav_path=cfg.speaker_wav_path,
+            sample_rate=cfg.sample_rate,
+            max_chars=cfg.max_chars,
+            join_silence_ms=cfg.join_silence_ms,
+        )
+        self.sample_rate = self.cfg.sample_rate
+
+    def _request(self, text: str, speaker: Optional[str], language: Optional[str], speaker_wav_path: Optional[str]) -> bytes:
+        payload = {
+            "text": text,
+            "language": language or self.cfg.language or "en",
+            "speaker": speaker or self.cfg.speaker,
+            "speaker_wav_path": speaker_wav_path or self.cfg.speaker_wav_path,
+            "model_id": self.cfg.model_id,
+            "device": self.cfg.device or None,
+            "sample_rate": self.cfg.sample_rate,
+            "max_chars": self.cfg.max_chars,
+            "join_silence_ms": self.cfg.join_silence_ms,
+        }
+        url = f"{self._base_url.rstrip('/')}/api/xtts/synthesize"
+        try:
+            # Ensure service is alive (and auto-start if permitted)
+            self._ensure_running()
+            resp = _post_json(url, payload)
+        except urllib.error.URLError as e:
+            # Connection refused / no route to host etc.
+            # Try one-time autostart if not yet attempted, then retry once
+            try:
+                self._ensure_running()
+                resp = _post_json(url, payload)
+            except Exception:
+                raise RuntimeError(
+                    "Unable to reach TTS sidecar at "
+                    f"{self._base_url}: {e}. If the issue persists, run ./setup.sh and ./run.sh"
+                )
+        audio_b64 = resp.get("audio_b64")
+        if not isinstance(audio_b64, str):
+            raise RuntimeError("sidecar did not return audio_b64")
+        try:
+            return base64.b64decode(audio_b64)
+        except Exception as e:
+            raise RuntimeError(f"failed to decode sidecar audio: {e}")
+
+    def synthesize(self, text: str, **style: Any) -> bytes:
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("text is empty")
+        speaker = style.get("speaker") or self.cfg.speaker
+        language = style.get("language") or self.cfg.language
+        speaker_wav = style.get("speaker_wav_path") or self.cfg.speaker_wav_path
+        return self._request(text, speaker, language, speaker_wav)
+
+    def stream_chunks(
+        self,
+        text: str,
+        *,
+        speaker: Optional[str],
+        language: Optional[str],
+        speaker_wav_path: Optional[str],
+        max_chars: int,
+        join_silence_ms: int,
+    ):
+        # Implement client-side chunking and concatenation; request WAV per chunk and return PCM16 blocks
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("text is empty")
+
+        chunks = self._chunk_text(text, max_chars=max_chars)
+        gap = b""
+        if join_silence_ms > 0:
+            silence_samples = int(self.sample_rate * join_silence_ms / 1000)
+            if silence_samples > 0:
+                gap = np.zeros(silence_samples, dtype=np.int16).tobytes()
+
+        for idx, segment in enumerate(chunks):
+            wav_bytes = self._request(segment, speaker, language, speaker_wav_path)
+            # Strip WAV header and yield PCM16
+            pcm = self._wav_to_pcm16(wav_bytes)
+            if idx > 0 and gap:
+                yield gap
+            yield pcm
+
+    def _chunk_text(self, text: str, *, max_chars: int) -> list[str]:
+        limit = max(int(max_chars or self.cfg.max_chars), 1)
+        sentences = [s.strip() for s in text.strip().split(". ") if s.strip()]
+        chunks: list[str] = []
+        buf = ""
+        for s in sentences:
+            cand = (f"{buf} {s}").strip() if buf else s
+            if len(cand) <= limit:
+                buf = cand
+            else:
+                if buf:
+                    chunks.append(buf)
+                if len(s) <= limit:
+                    buf = s
+                else:
+                    for i in range(0, len(s), limit):
+                        seg = s[i : i + limit].strip()
+                        if seg:
+                            chunks.append(seg)
+                    buf = ""
+        if buf:
+            chunks.append(buf)
+        return chunks or [text]
+
+    def _wav_to_pcm16(self, wav_bytes: bytes) -> bytes:
+        # Minimal WAV header parsing; assume mono PCM16
+        import soundfile as sf  # type: ignore
+        import numpy as np  # type: ignore
+
+        buf = io.BytesIO(wav_bytes)
+        data, sr = sf.read(buf, dtype="int16")
+        if sr != self.sample_rate:
+            # Resample if needed
+            try:
+                import librosa  # type: ignore
+
+                data_f = librosa.resample(data.astype(np.float32) / 32767.0, orig_sr=sr, target_sr=self.sample_rate)
+                data = (np.clip(data_f, -1.0, 1.0) * 32767.0).astype(np.int16)
+            except Exception:
+                pass
+        if data.ndim > 1:
+            data = data[:, 0]
+        return data.tobytes()
+
+    def cleanup(self) -> None:
+        return None
+
+
 def wav_header(sample_rate: int, channels: int = 1, bits_per_sample: int = 16, data_bytes: Optional[int] = None) -> bytes:
     block_align = channels * (bits_per_sample // 8)
     byte_rate = sample_rate * block_align
@@ -293,21 +550,25 @@ def config_from_dict(raw: Mapping[str, Any] | None) -> XTTSConfig:
 
 
 _backend_lock = threading.Lock()
-_backend: Optional[XTTSBackend] = None
+_backend: Optional[Any] = None
 
 
-def get_backend(cfg: XTTSConfig) -> XTTSBackend:
+def get_backend(cfg: XTTSConfig) -> Any:
     global _backend
     with _backend_lock:
-        if _backend is None:
-            _backend = XTTSBackend(cfg)
+        # Decide backend: native Coqui if available, else sidecar
+        force_sidecar = os.environ.get("TTS_FORCE_SIDECAR") not in (None, "", "0", "false", "False")
+        use_sidecar = force_sidecar or not COQUI_TTS_AVAILABLE
+        BackendCls = SidecarXTTSBackend if use_sidecar else XTTSBackend
+        if _backend is None or not isinstance(_backend, BackendCls):
+            _backend = BackendCls(cfg)
             return _backend
 
         if (
             _backend.cfg.model_id != cfg.model_id
             or (_backend.cfg.device or "auto") != (cfg.device or "auto")
         ):
-            _backend = XTTSBackend(cfg)
+            _backend = BackendCls(cfg)
             return _backend
 
         _backend.update_config(cfg)

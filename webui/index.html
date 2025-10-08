@@ -184,7 +184,6 @@
                     <div class="tabs">
                         <div class="tab active" id="chats-tab">Chats</div>
                         <div class="tab" id="tasks-tab">Tasks</div>
-                        <div class="tab" id="memory-tab">Memory</div>
                     </div>
                 </div>
 
@@ -263,132 +262,6 @@
                         </ul>
                         <div class="empty-list-message" x-show="tasks.length === 0">
                             <p><i>No tasks to list.</i></p>
-                        </div>
-                    </div>
-                </div>
-                <!-- Memory Dashboard -->
-                <div class="config-section" id="memory-section" x-data="memoryDashboard()" x-init="init()"
-                    x-cloak style="display: none;">
-                    <div class="memory-header">
-                        <h2>Memory Dashboard</h2>
-                        <div class="memory-actions">
-                            <button class="btn" @click="loadRecent(true)" :disabled="isLoading">Refresh</button>
-                            <button class="btn btn-warn" @click="deleteSelected" :disabled="!hasSelection">
-                                Delete Selected
-                            </button>
-                            <button class="btn btn-danger" @click="reindex" :disabled="isReindexing">
-                                Reindex
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="memory-stats" x-show="stats">
-                        <div class="memory-stat">
-                            <span class="label">Total</span>
-                            <span class="value" x-text="stats?.total_count ?? 0"></span>
-                        </div>
-                        <div class="memory-stat">
-                            <span class="label">With Vectors</span>
-                            <span class="value" x-text="stats?.with_vectors ?? 0"></span>
-                        </div>
-                        <div class="memory-stat">
-                            <span class="label">Without Vectors</span>
-                            <span class="value" x-text="stats?.without_vectors ?? 0"></span>
-                        </div>
-                        <div class="memory-stat">
-                            <span class="label">Last Update</span>
-                            <span class="value" x-text="stats?.last_ts_iso ? readableTimestamp(stats.last_ts_iso) : '—'"></span>
-                        </div>
-                    </div>
-
-                    <div class="memory-controls">
-                        <label>
-                            Session
-                            <select x-model="session" @change="changeSession">
-                                <template x-for="sessionName in sessions" :key="sessionName">
-                                    <option :value="sessionName" x-text="sessionName"></option>
-                                </template>
-                                <template x-if="sessions.length === 0">
-                                    <option value="default">default</option>
-                                </template>
-                            </select>
-                        </label>
-                        <label>
-                            Query
-                            <input type="text" x-model="query" placeholder="Search memories"
-                                @keydown.enter.prevent="searchMemories(true)">
-                        </label>
-                        <label x-show="mode === 'search'">
-                            Top K
-                            <input type="number" min="1" x-model.number="topK">
-                        </label>
-                        <label x-show="mode !== 'search'">
-                            Page Size
-                            <input type="number" min="1" x-model.number="limit">
-                        </label>
-                        <button class="btn" @click="searchMemories(true)" :disabled="isLoading">
-                            <span x-show="mode === 'search'">Search</span>
-                            <span x-show="mode !== 'search'">Apply</span>
-                        </button>
-                        <button class="btn" @click="loadRecent(true)" :disabled="isLoading">Recent</button>
-                    </div>
-
-                    <div class="memory-table-wrapper">
-                        <div class="memory-loading" x-show="isLoading">Loading memories…</div>
-                        <div class="memory-empty" x-show="!isLoading && items.length === 0">
-                            No memory entries found for this session.
-                        </div>
-                        <table class="memory-table" x-show="!isLoading && items.length > 0">
-                            <thead>
-                                <tr>
-                                    <th></th>
-                                    <th>ID</th>
-                                    <th>Timestamp</th>
-                                    <th>Session</th>
-                                    <th>Kind</th>
-                                    <th>Tags</th>
-                                    <th>Content</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="item in items" :key="item.id">
-                                    <tr :class="{'selected': isSelected(item.id)}">
-                                        <td>
-                                            <input type="checkbox" :checked="isSelected(item.id)"
-                                                @change="toggleSelect(item.id)">
-                                        </td>
-                                        <td>
-                                            <div class="memory-id" x-text="item.id"></div>
-                                        </td>
-                                        <td x-text="readableTimestamp(item.ts)"></td>
-                                        <td x-text="item.meta?.session || session"></td>
-                                        <td x-text="item.kind"></td>
-                                        <td>
-                                            <span class="memory-tag"
-                                                x-text="Array.isArray(item.tags) ? item.tags.join(', ') : ''"></span>
-                                        </td>
-                                        <td>
-                                            <div class="memory-content" x-text="ellipsize(item.text)"></div>
-                                        </td>
-                                        <td>
-                                            <button class="btn btn-small" @click.prevent="deleteItem(item.id)">
-                                                Delete
-                                            </button>
-                                        </td>
-                                    </tr>
-                                </template>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <div class="memory-pagination" x-show="items.length > 0">
-                        <div class="memory-page-info">
-                            <span x-text="`${pageStart} – ${pageEnd} of ${mode === 'search' ? topK : totalCount}`"></span>
-                        </div>
-                        <div class="memory-page-controls">
-                            <button class="btn" @click="prevPage" :disabled="!canPrev">Previous</button>
-                            <button class="btn" @click="nextPage" :disabled="!canNext">Next</button>
                         </div>
                     </div>
                 </div>
@@ -612,6 +485,17 @@
                                 fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="8"></path>
                         </svg>
                         <p>Files</p>
+                    </button>
+
+                    <button class="text-button" id="memory_dashboard" @click="memoryModalProxy.open()">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14"
+                            fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                            stroke-linejoin="round">
+                            <ellipse cx="12" cy="5.5" rx="6.5" ry="3"></ellipse>
+                            <path d="M5.5 5.5v5c0 1.66 2.91 3 6.5 3s6.5-1.34 6.5-3v-5"></path>
+                            <path d="M5.5 10.5v5c0 1.66 2.91 3 6.5 3s6.5-1.34 6.5-3v-5"></path>
+                        </svg>
+                        <p>Memory</p>
                     </button>
 
                     <button class="text-button" id="history_inspect" @click="globalThis.openHistoryModal()">
@@ -1577,6 +1461,176 @@
                                 <button :class="button.classes" @click="handleButton(button.id)"
                                     x-text="button.title"></button>
                             </template>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- Memory Dashboard Modal -->
+    <div id="memoryModal" x-data="memoryModalProxy" x-cloak>
+        <template x-teleport="body">
+            <div x-show="isOpen" class="modal-overlay memory-modal" @click="handleOverlay($event)"
+                @keydown.escape.window="closeModal()" x-transition>
+                <div class="modal-container memory-modal-container">
+                    <div class="modal-header memory-modal-header">
+                        <div class="memory-modal-title">
+                            <h2>Memory Dashboard</h2>
+                            <span class="memory-session-chip" x-text="`Session: ${dashboard.session}`"></span>
+                        </div>
+                        <button class="modal-close" @click="closeModal()">&times;</button>
+                    </div>
+                    <div class="modal-content memory-modal-content">
+                        <div class="memory-toolbar">
+                            <div class="memory-toolbar-summary">
+                                <span class="memory-subtle-text"
+                                    x-text="dashboard.stats?.last_ts_iso ? `Last update ${dashboard.readableTimestamp(dashboard.stats.last_ts_iso)}` : 'Awaiting first memory update'"></span>
+                                <span class="memory-subtle-text"
+                                    x-text="dashboard.stats?.last_reindex_iso ? `Last reindex ${dashboard.readableTimestamp(dashboard.stats.last_reindex_iso)}` : 'No reindex recorded yet'"></span>
+                            </div>
+                            <div class="memory-actions">
+                                <button class="btn" @click="dashboard.loadRecent(true)" :disabled="dashboard.isLoading">
+                                    Refresh
+                                </button>
+                                <button class="btn btn-warn" @click="dashboard.deleteSelected()"
+                                    :disabled="!dashboard.hasSelection">
+                                    Delete Selected
+                                </button>
+                                <button class="btn btn-danger" @click="dashboard.reindex()"
+                                    :disabled="dashboard.isReindexing">
+                                    Reindex
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="memory-stats-grid" x-show="dashboard.stats">
+                            <div class="memory-stat-card">
+                                <span class="label">Total</span>
+                                <span class="value" x-text="dashboard.stats?.total_count ?? 0"></span>
+                            </div>
+                            <div class="memory-stat-card">
+                                <span class="label">With Vectors</span>
+                                <span class="value" x-text="dashboard.stats?.with_vectors ?? 0"></span>
+                            </div>
+                            <div class="memory-stat-card">
+                                <span class="label">Without Vectors</span>
+                                <span class="value" x-text="dashboard.stats?.without_vectors ?? 0"></span>
+                            </div>
+                            <div class="memory-stat-card" x-show="dashboard.stats && dashboard.stats.vector_dim">
+                                <span class="label">Vector Dim</span>
+                                <span class="value"
+                                    x-text="dashboard.stats && typeof dashboard.stats.vector_dim === 'number' && dashboard.stats.vector_dim > 0 ? dashboard.stats.vector_dim : '—'"></span>
+                            </div>
+                            <div class="memory-stat-card">
+                                <span class="label">Embedding Provider</span>
+                                <span class="value" x-text="dashboard.stats?.embedding_provider || '—'"></span>
+                            </div>
+                            <div class="memory-stat-card">
+                                <span class="label">Embedding Model</span>
+                                <span class="value" x-text="dashboard.stats?.embedding_model || '—'"></span>
+                            </div>
+                        </div>
+
+                        <div class="memory-controls">
+                            <label>
+                                Session
+                                <select x-model="dashboard.session" @change="dashboard.changeSession()">
+                                    <template x-for="sessionName in dashboard.sessions" :key="sessionName">
+                                        <option :value="sessionName" x-text="sessionName"></option>
+                                    </template>
+                                    <template x-if="dashboard.sessions.length === 0">
+                                        <option value="default">default</option>
+                                    </template>
+                                </select>
+                            </label>
+                            <label>
+                                Query
+                                <input type="text" x-model="dashboard.query" placeholder="Search memories"
+                                    @keydown.enter.prevent="dashboard.searchMemories(true)">
+                            </label>
+                            <label x-show="dashboard.mode === 'search'">
+                                Top K
+                                <input type="number" min="1" x-model.number="dashboard.topK">
+                            </label>
+                            <label x-show="dashboard.mode !== 'search'">
+                                Page Size
+                                <input type="number" min="1" x-model.number="dashboard.limit">
+                            </label>
+                            <div class="memory-controls-buttons">
+                                <button class="btn" @click="dashboard.searchMemories(true)"
+                                    :disabled="dashboard.isLoading">
+                                    <span x-show="dashboard.mode === 'search'">Search</span>
+                                    <span x-show="dashboard.mode !== 'search'">Apply</span>
+                                </button>
+                                <button class="btn" @click="dashboard.loadRecent(true)" :disabled="dashboard.isLoading">
+                                    Recent
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="memory-table-wrapper">
+                            <div class="memory-loading" x-show="dashboard.isLoading">Loading memories…</div>
+                            <div class="memory-empty" x-show="!dashboard.isLoading && dashboard.items.length === 0">
+                                No memory entries found for this session.
+                            </div>
+                            <table class="memory-table" x-show="!dashboard.isLoading && dashboard.items.length > 0">
+                                <thead>
+                                    <tr>
+                                        <th></th>
+                                        <th>ID</th>
+                                        <th>Timestamp</th>
+                                        <th>Session</th>
+                                        <th>Kind</th>
+                                        <th>Tags</th>
+                                        <th>Content</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="item in dashboard.items" :key="item.id">
+                                        <tr :class="{'selected': dashboard.isSelected(item.id)}">
+                                            <td>
+                                                <input type="checkbox" :checked="dashboard.isSelected(item.id)"
+                                                    @change="dashboard.toggleSelect(item.id)">
+                                            </td>
+                                            <td>
+                                                <div class="memory-id" x-text="item.id"></div>
+                                            </td>
+                                            <td x-text="dashboard.readableTimestamp(item.ts)"></td>
+                                            <td x-text="item.meta?.session || dashboard.session"></td>
+                                            <td x-text="item.kind"></td>
+                                            <td>
+                                                <span class="memory-tag"
+                                                    x-text="Array.isArray(item.tags) ? item.tags.join(', ') : ''"></span>
+                                            </td>
+                                            <td>
+                                                <div class="memory-content" x-text="dashboard.ellipsize(item.text)"></div>
+                                            </td>
+                                            <td>
+                                                <button class="btn btn-small" @click.prevent="dashboard.deleteItem(item.id)">
+                                                    Delete
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="memory-pagination" x-show="dashboard.items.length > 0">
+                            <div class="memory-page-info">
+                                <span
+                                    x-text="`${dashboard.pageStart} – ${dashboard.pageEnd} of ${dashboard.mode === 'search' ? dashboard.topK : dashboard.totalCount}`"></span>
+                            </div>
+                            <div class="memory-page-controls">
+                                <button class="btn" @click="dashboard.prevPage()" :disabled="!dashboard.canPrev">
+                                    Previous
+                                </button>
+                                <button class="btn" @click="dashboard.nextPage()" :disabled="!dashboard.canNext">
+                                    Next
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

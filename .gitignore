@@ -13,6 +13,12 @@
 # Ignore all contents of the virtual environment directory
 venv/
 .qa-venv/
+# Sidecar / tooling virtualenvs
+.venv/
+.venv*/
+.venv-tts311/
+sidecar/.venv/
+sidecar/.venv*/
 
 # Handle memory directory
 memory/**

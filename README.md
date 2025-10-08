@@ -125,8 +125,8 @@ priority = 1  # Higher = preferred
 capabilities = ["general", "code", "research"]
 
 [embeddings]
-provider = "openai"  # Local options available too
-model = "text-embedding-3-large"
+provider = "huggingface"  # Local sentence-transformers are bundled by default
+model = "sentence-transformers/all-MiniLM-L6-v2"
 
 [memory]
 db_path = "./data/runtime.sqlite"
@@ -358,7 +358,8 @@ Apple Zero uses a local SQLite+FAISS store (`python/runtime/memory`) for semanti
 
 | Provider | Model / Endpoint | Config Keys | Notes |
 | --- | --- | --- | --- |
-| OpenAI | `text-embedding-3-large` (default) | `EMBEDDINGS_PROVIDER=openai`, `EMBEDDINGS_MODEL=text-embedding-3-large` | High-quality embeddings, cached in `./tmp/embeddings.sqlite`. |
+| Hugging Face (local) | `sentence-transformers/all-MiniLM-L6-v2` (default) | `EMBEDDINGS_PROVIDER=huggingface`, `EMBEDDINGS_MODEL=sentence-transformers/all-MiniLM-L6-v2` | Runs fully offline with disk cache stored in `./tmp/embeddings.sqlite`. |
+| OpenAI | `text-embedding-3-large` | `EMBEDDINGS_PROVIDER=openai`, `EMBEDDINGS_MODEL=text-embedding-3-large` | Remote alternative; requires `OPENAI_API_KEY`. Cached locally. |
 | LiteLLM → LM Studio | Example `text-embedding-3-small` served by LM Studio | `EMBEDDINGS_PROVIDER=local_mlx`, `EMBEDDINGS_MODEL=lm-studio`, set `OPENAI_BASE_URL` to LM Studio server | Uses LiteLLM-compatible REST API. |
 | Null | Deterministic stub for tests | `EMBEDDINGS_PROVIDER=null` | Returns fixed vectors for offline testing. |
 

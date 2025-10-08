@@ -91,6 +91,10 @@ pip install "numpy<2" wheel
 echo "Installing root requirements..."
 pip install -r requirements.txt
 
+echo "Skipping Coqui source build on Python 3.12; using sidecar service instead."
+echo "Preparing TTS sidecar environment (Python 3.11)..."
+./setup.sh
+
 # Install SearXNG dependencies up front to avoid runtime installs
 if [ -f "searxng/requirements.txt" ]; then
     echo "Installing SearXNG requirements..."

@@ -53,13 +53,71 @@ async def preload():
                     return
                 if tts_settings.get("engine") != "xtts":
                     return
-                from python.helpers.xtts_tts import config_from_dict as _cfg, get_backend as _get
+                try:
+                    from python.helpers.xtts_tts import config_from_dict as _cfg, get_backend as _get
+                except Exception as exc:
+                    PrintStyle().error(f"XTTS preload skipped: {exc}")
+                    return
                 cfg_map = tts_settings.get("xtts")
                 cfg = _cfg(cfg_map if isinstance(cfg_map, dict) else {})
                 await asyncio.to_thread(_get, cfg)
                 PrintStyle(level=logging.DEBUG).print("XTTS backend warmed up")
             except Exception as e:
                 PrintStyle().error(f"Error in preload_xtts: {e}")
+
+        async def preload_kokoro():
+            try:
+                tts_settings = current.get("tts", {}) if isinstance(current, dict) else {}
+                if not isinstance(tts_settings, dict):
+                    return
+                if tts_settings.get("engine") != "kokoro":
+                    return
+                try:
+                    from python.helpers import kokoro_tts
+                except Exception as exc:
+                    PrintStyle().error(f"Kokoro preload skipped: {exc}")
+                    return
+                await kokoro_tts.preload()
+            except Exception as e:
+                PrintStyle().error(f"Error in preload_kokoro: {e}")
+
+        async def preload_piper_vc():
+            try:
+                tts_settings = current.get("tts", {}) if isinstance(current, dict) else {}
+                if not isinstance(tts_settings, dict):
+                    return
+                if tts_settings.get("engine") != "piper_vc":
+                    return
+                p = tts_settings.get("piper_vc", {}) or {}
+                piper_bin = p.get("piper_bin", "piper")
+                try:
+                    subprocess.run(
+                        [piper_bin, "--help"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=True,
+                    )
+                except Exception as exc:
+                    PrintStyle().error(f"Piper not found or not runnable: {exc}")
+                    return
+                try:
+                    from TTS.api import TTS as CoquiTTS  # type: ignore
+                    import torch  # type: ignore
+
+                    device = "cpu"
+                    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                        device = "mps"
+                    elif torch.cuda.is_available():
+                        device = "cuda"
+
+                    await asyncio.to_thread(
+                        lambda: CoquiTTS("voice_conversion_models/multilingual/multi-dataset/openvoice_v2").to(device)
+                    )
+                    PrintStyle(level=logging.DEBUG).print("Piper+OpenVoice VC warmed up")
+                except Exception as exc:
+                    PrintStyle().error(f"Error warming Piper+OpenVoice VC: {exc}")
+            except Exception as e:
+                PrintStyle().error(f"Error in preload_piper_vc: {e}")
 
         async def preload_mlx():
             try:
@@ -94,6 +152,8 @@ async def preload():
             # preload_whisper(),
             preload_chatterbox(),
             preload_xtts(),
+            preload_kokoro(),
+            preload_piper_vc(),
             preload_mlx(),
         ]
 

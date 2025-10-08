@@ -13,11 +13,14 @@ from .provider import BaseEmbeddingsProvider, gather_in_batches, get_provider, r
 from .providers.local_mlx import LocalMLXEmbeddingsProvider
 from .providers.null import NullEmbeddingsProvider
 from .providers.openai import OpenAIEmbeddingsProvider
+from .providers.sentence_transformers import SentenceTransformersEmbeddingsProvider
 
 logger = logging.getLogger(__name__)
 
 # Register built-in providers
 register_provider("openai", lambda cfg: OpenAIEmbeddingsProvider(cfg))
+register_provider("huggingface", lambda cfg: SentenceTransformersEmbeddingsProvider(cfg))
+register_provider("sentence_transformers", lambda cfg: SentenceTransformersEmbeddingsProvider(cfg))
 register_provider("local_mlx", lambda cfg: LocalMLXEmbeddingsProvider(cfg))
 register_provider("null", lambda cfg: NullEmbeddingsProvider(cfg))
 

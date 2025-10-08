@@ -37,8 +37,8 @@ DEFAULT_TOKEN_BUDGETS: Dict[str, int] = {
 
 @dataclass(slots=True)
 class EmbeddingsConfig:
-    provider: str = "openai"
-    model: str = "text-embedding-3-large"
+    provider: str = "huggingface"
+    model: str = "sentence-transformers/all-MiniLM-L6-v2"
     batch_size: int = 32
     cache_path: Path = Path("./tmp/embeddings.sqlite")
 
@@ -307,13 +307,18 @@ def load_runtime_config() -> RuntimeConfig:
         provider=str(
             env.get(
                 "EMBEDDINGS_PROVIDER",
-                _lookup(settings, "embeddings", "provider", default="openai"),
+                _lookup(settings, "embeddings", "provider", default="huggingface"),
             )
         ).strip(),
         model=str(
             env.get(
                 "EMBEDDINGS_MODEL",
-                _lookup(settings, "embeddings", "model", default="text-embedding-3-large"),
+                _lookup(
+                    settings,
+                    "embeddings",
+                    "model",
+                    default="sentence-transformers/all-MiniLM-L6-v2",
+                ),
             )
         ).strip(),
         batch_size=_as_int(

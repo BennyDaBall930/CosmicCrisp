@@ -276,3 +276,62 @@ export function memoryDashboard() {
 if (!globalThis.memoryDashboard) {
   globalThis.memoryDashboard = memoryDashboard;
 }
+
+const memoryModalProxy = {
+  open() {
+    const modalEl = globalThis.document?.getElementById("memoryModal");
+    if (!modalEl) {
+      console.error("Memory modal element not found");
+      return;
+    }
+    const modalAD = globalThis.Alpine ? Alpine.$data(modalEl) : null;
+    if (!modalAD) {
+      console.error("Memory modal is not ready");
+      return;
+    }
+    modalAD.openModal();
+  },
+
+  close() {
+    const modalEl = globalThis.document?.getElementById("memoryModal");
+    if (!modalEl) return;
+    const modalAD = globalThis.Alpine ? Alpine.$data(modalEl) : null;
+    if (modalAD?.closeModal) {
+      modalAD.closeModal();
+    }
+  },
+};
+
+document.addEventListener("alpine:init", () => {
+  Alpine.data("memoryModalProxy", () => ({
+    isOpen: false,
+    dashboard: memoryDashboard(),
+    init() {
+      this.$watch("isOpen", (open) => {
+        if (open && !this.dashboard.initializeAttempted) {
+          this.dashboard.init();
+        } else if (open) {
+          this.dashboard.fetchStats();
+        }
+      });
+    },
+    openModal() {
+      if (!this.dashboard.initializeAttempted) {
+        this.dashboard.init();
+      } else {
+        this.dashboard.loadRecent(true);
+      }
+      this.isOpen = true;
+    },
+    closeModal() {
+      this.isOpen = false;
+    },
+    handleOverlay(event) {
+      if (event.target === event.currentTarget) {
+        this.closeModal();
+      }
+    },
+  }));
+});
+
+globalThis.memoryModalProxy = globalThis.memoryModalProxy || memoryModalProxy;

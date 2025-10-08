@@ -2715,84 +2715,146 @@ nav ul li a img {
 }
 
 /* Memory dashboard */
-.memory-header {
+.memory-modal .modal-content {
+  padding-top: 1rem;
+  padding-bottom: 1.5rem;
+}
+
+.memory-modal-container {
+  width: 1100px;
+  max-width: 95vw;
+}
+
+.memory-modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.memory-modal-title {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+}
+
+.memory-session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 195, 64, 0.35);
+  background: rgba(0, 195, 64, 0.12);
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+}
+
+.light-mode .memory-session-chip {
+  background: rgba(0, 195, 64, 0.12);
+  border-color: rgba(0, 195, 64, 0.35);
+  color: #0a7a3f;
+}
+
+.memory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.memory-toolbar-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.memory-subtle-text {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .memory-actions .btn {
-  margin-left: 8px;
-}
-
-.memory-actions .btn:first-child {
   margin-left: 0;
 }
 
-.memory-stats {
-  display: flex;
-  flex-wrap: wrap;
+.memory-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 
-.memory-stat {
+.memory-stat-card {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: var(--panel-bg-alt, #1d1f24);
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--panel-bg-alt, #181b23);
   border: 1px solid var(--border-color, #303540);
+  min-height: 80px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
 }
 
-.memory-stat .label {
-  font-size: 12px;
+.memory-stat-card .label {
+  font-size: 11px;
   text-transform: uppercase;
-  opacity: 0.7;
+  opacity: 0.6;
+  letter-spacing: 0.08em;
 }
 
-.memory-stat .value {
+.memory-stat-card .value {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 20px;
+  line-height: 1.1;
 }
 
 .memory-controls {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   align-items: flex-end;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 
 .memory-controls label {
   display: flex;
   flex-direction: column;
   font-size: 14px;
-  gap: 4px;
+  gap: 6px;
 }
 
 .memory-controls input,
 .memory-controls select {
-  padding: 6px 8px;
-  border-radius: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
   border: 1px solid var(--border-color, #303540);
   background: var(--input-bg, #10131a);
   color: inherit;
 }
 
-.memory-controls .btn {
-  margin-left: auto;
+.memory-controls-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .memory-table-wrapper {
   position: relative;
   border: 1px solid var(--border-color, #303540);
-  border-radius: 8px;
+  border-radius: 12px;
   overflow: hidden;
-  max-height: 320px;
+  max-height: 420px;
   overflow-y: auto;
   background: var(--panel-bg-alt, #14171f);
 }
@@ -2805,7 +2867,7 @@ nav ul li a img {
 
 .memory-table th,
 .memory-table td {
-  padding: 8px 10px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border-color, #303540);
   vertical-align: top;
   text-align: left;
@@ -2816,10 +2878,13 @@ nav ul li a img {
   position: sticky;
   top: 0;
   z-index: 1;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
 }
 
 .memory-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .memory-table tr.selected {
@@ -2827,18 +2892,18 @@ nav ul li a img {
 }
 
 .memory-content {
-  max-width: 280px;
+  max-width: 320px;
   white-space: normal;
 }
 
 .memory-loading,
 .memory-empty {
-  padding: 12px;
+  padding: 14px;
   font-style: italic;
 }
 
 .memory-pagination {
-  margin-top: 12px;
+  margin-top: 16px;
   display: flex;
   justify-content: space-between;
   align-items: center;
