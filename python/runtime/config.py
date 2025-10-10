@@ -95,9 +95,9 @@ class ObservabilityConfig:
 
 @dataclass(slots=True)
 class AgentConfig:
-    max_loops: int = 20
-    subagent_max_depth: int = 3
-    subagent_timeout: float = 120.0
+    max_loops: Optional[int] = None
+    subagent_max_depth: Optional[int] = None
+    subagent_timeout: Optional[float] = 120.0
     persona: str = "default"
     planner_profile: str = "planner"
     execution_profile: str = "general"
@@ -190,6 +190,38 @@ def _as_int(value: Any, default: int) -> int:
 def _as_float(value: Any, default: float) -> float:
     if value is None:
         return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_optional_int(value: Any, default: Optional[int]) -> Optional[int]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip()
+        if text == "":
+            return None
+        if text.lower() in {"none", "null"}:
+            return None
+        value = text
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_optional_float(value: Any, default: Optional[float]) -> Optional[float]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip()
+        if text == "":
+            return None
+        if text.lower() in {"none", "null"}:
+            return None
+        value = text
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -403,18 +435,21 @@ def load_runtime_config() -> RuntimeConfig:
     )
 
     agent = AgentConfig(
-        max_loops=_as_int(
-            env.get("AGENT_MAX_LOOPS", _lookup(settings, "agent", "max_loops", default=20)),
-            20,
+        max_loops=_as_optional_int(
+            env.get(
+                "AGENT_MAX_LOOPS",
+                _lookup(settings, "agent", "max_loops", default=None),
+            ),
+            None,
         ),
-        subagent_max_depth=_as_int(
+        subagent_max_depth=_as_optional_int(
             env.get(
                 "AGENT_SUBAGENT_MAX_DEPTH",
-                _lookup(settings, "agent", "subagent_max_depth", default=3),
+                _lookup(settings, "agent", "subagent_max_depth", default=None),
             ),
-            3,
+            None,
         ),
-        subagent_timeout=_as_float(
+        subagent_timeout=_as_optional_float(
             env.get(
                 "AGENT_SUBAGENT_TIMEOUT",
                 _lookup(settings, "agent", "subagent_timeout", default=120.0),

@@ -220,6 +220,12 @@ class AgentConfig:
     profile: str = ""
     memory_subdir: str = ""
     knowledge_subdirs: list[str] = field(default_factory=lambda: ["default", "custom"])
+    browser_http_headers: dict[str, str] = field(default_factory=dict)
+    code_exec_ssh_enabled: bool = True
+    code_exec_ssh_addr: str = "localhost"
+    code_exec_ssh_port: int = 55022
+    code_exec_ssh_user: str = "root"
+    code_exec_ssh_pass: str = ""
     additional: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -333,23 +339,46 @@ class Agent:
                         await self.call_extensions("before_main_llm_call", loop_data=self.loop_data)
 
                         async def reasoning_callback(chunk: str, full: str):
+                            await self.handle_intervention()
                             if chunk == full:
                                 printer.print("Reasoning: ")  # start of reasoning
-                            printer.stream(chunk)
-                            await self.handle_reasoning_stream(full)
+                            stream_data = {"chunk": chunk, "full": full}
+                            await self.call_extensions(
+                                "reasoning_stream_chunk",
+                                loop_data=self.loop_data,
+                                stream_data=stream_data,
+                            )
+                            if stream_data.get("chunk"):
+                                printer.stream(stream_data["chunk"])
+                            await self.handle_reasoning_stream(stream_data["full"])
 
                         async def stream_callback(chunk: str, full: str):
+                            await self.handle_intervention()
                             # output the agent response stream
                             if chunk == full:
                                 printer.print("Response: ")  # start of response
-                            printer.stream(chunk)
-                            await self.handle_response_stream(full)
+                            stream_data = {"chunk": chunk, "full": full}
+                            await self.call_extensions(
+                                "response_stream_chunk",
+                                loop_data=self.loop_data,
+                                stream_data=stream_data,
+                            )
+                            if stream_data.get("chunk"):
+                                printer.stream(stream_data["chunk"])
+                            await self.handle_response_stream(stream_data["full"])
 
                         # call main LLM
                         agent_response, _reasoning = await self.call_chat_model(
                             messages=prompt,
                             response_callback=stream_callback,
                             reasoning_callback=reasoning_callback,
+                        )
+
+                        await self.call_extensions(
+                            "reasoning_stream_end", loop_data=self.loop_data
+                        )
+                        await self.call_extensions(
+                            "response_stream_end", loop_data=self.loop_data
                         )
 
                         await self.handle_intervention(agent_response)
@@ -380,10 +409,14 @@ class Agent:
                         pass  # intervention message has been handled in handle_intervention(), proceed with conversation loop
                     except RepairableException as e:
                         # Forward repairable errors to the LLM, maybe it can fix them
-                        error_message = errors.format_error(e)
-                        self.hist_add_warning(error_message)
-                        PrintStyle(font_color="red", padding=True).print(error_message)
-                        self.context.log.log(type="error", content=error_message)
+                        msg = {"message": errors.format_error(e)}
+                        try:
+                            await self.call_extensions("error_format", msg=msg)
+                        except Exception:
+                            pass
+                        self.hist_add_warning(msg["message"])
+                        PrintStyle(font_color="red", padding=True).print(msg["message"])
+                        self.context.log.log(type="error", content=msg["message"])
                     except Exception as e:
                         # Other exception kill the loop
                         self.handle_critical_exception(e)
@@ -523,7 +556,31 @@ class Agent:
         self, ai: bool, content: history.MessageContent, tokens: int = 0
     ):
         self.last_message = datetime.now(timezone.utc)
-        return self.history.add_message(ai=ai, content=content, tokens=tokens)
+        content_data = {"content": content}
+        try:
+            # If we're already inside an event loop (e.g., during agent_init on
+            # Background thread), schedule without blocking to avoid deadlocks.
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self.call_extensions(
+                        "hist_add_before", content_data=content_data, ai=ai
+                    )
+                )
+            except RuntimeError:
+                loop_thread = EventLoopThread("Background")
+                fut = loop_thread.run_coroutine(
+                    self.call_extensions(
+                        "hist_add_before", content_data=content_data, ai=ai
+                    )
+                )
+                if threading.current_thread().name != loop_thread.thread_name:
+                    fut.result()
+        except Exception:
+            pass
+        return self.history.add_message(
+            ai=ai, content=content_data["content"], tokens=tokens
+        )
 
     def hist_add_user_message(self, message: UserMessage, intervention: bool = False):
         self.history.new_topic()  # user message starts a new topic in history
@@ -562,11 +619,33 @@ class Agent:
         content = self.parse_prompt("fw.warning.md", message=message)
         return self.hist_add_message(False, content=content)
 
-    def hist_add_tool_result(self, tool_name: str, tool_result: str):
+    def hist_add_tool_result(self, tool_name: str, tool_result: str, **kwargs):
+        data = {
+            "tool_name": tool_name,
+            "tool_result": tool_result,
+            **kwargs,
+        }
         content = self.parse_prompt(
             "fw.tool_result.md", tool_name=tool_name, tool_result=tool_result
         )
-        return self.hist_add_message(False, content=content)
+        data["content"] = content
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self.call_extensions("hist_add_tool_result", data=data)
+                )
+            except RuntimeError:
+                loop_thread = EventLoopThread("Background")
+                fut = loop_thread.run_coroutine(
+                    self.call_extensions("hist_add_tool_result", data=data)
+                )
+                if threading.current_thread().name != loop_thread.thread_name:
+                    fut.result()
+        except Exception:
+            pass
+        final_content = data.get("content", content)
+        return self.hist_add_message(False, content=final_content)
 
     def concat_messages(
         self, messages
@@ -614,17 +693,32 @@ class Agent:
     ):
         model = self.get_utility_model()
 
+        call_data = {
+            "model": model,
+            "system": system,
+            "message": message,
+            "callback": callback,
+            "background": background,
+        }
+
+        try:
+            await self.call_extensions("util_model_call_before", call_data=call_data)
+        except Exception:
+            pass
+
 
         # propagate stream to callback if set
         async def stream_callback(chunk: str, total: str):
-            if callback:
-                await callback(chunk)
+            if call_data.get("callback"):
+                await call_data["callback"](chunk)
 
-        response, _reasoning = await model.unified_call(
-            system_message=system,
-            user_message=message,
+        response, _reasoning = await call_data["model"].unified_call(
+            system_message=call_data["system"],
+            user_message=call_data["message"],
             response_callback=stream_callback,
-            rate_limiter_callback=self.rate_limiter_callback if not background else None,
+            rate_limiter_callback=self.rate_limiter_callback
+            if not call_data.get("background")
+            else None,
         )
 
         return response
@@ -721,10 +815,41 @@ class Agent:
                 await self.handle_intervention()
                 await tool.before_execution(**tool_args)
                 await self.handle_intervention()
+
+                try:
+                    await self.call_extensions(
+                        "tool_execute_before",
+                        tool_args=tool_args or {},
+                        tool_name=tool_name,
+                    )
+                except Exception:
+                    pass
+
                 response = await tool.execute(**tool_args)
                 await self.handle_intervention()
+
+                try:
+                    await self.call_extensions(
+                        "tool_execute_after", response=response, tool_name=tool_name
+                    )
+                except Exception:
+                    pass
+
                 await tool.after_execution(response)
                 await self.handle_intervention()
+
+                try:
+                    self.set_data(
+                        "last_tool_call",
+                        {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "last_tool_output": response.message,
+                        },
+                    )
+                except Exception:
+                    pass
+
                 if response.break_loop:
                     return response.message
             else:
@@ -737,6 +862,9 @@ class Agent:
                     type="error", content=f"{self.agent_name}: {error_detail}"
                 )
         else:
+            # If the model didn't return a valid tool call, fall back to a
+            # plain response so the UI is never left hanging on "Generating...".
+            # We still record a warning for observability.
             warning_msg_misformat = self.read_prompt("fw.msg_misformat.md")
             self.hist_add_warning(warning_msg_misformat)
             PrintStyle(font_color="red", padding=True).print(warning_msg_misformat)
@@ -745,7 +873,29 @@ class Agent:
                 content=f"{self.agent_name}: Message misformat, no valid tool request found.",
             )
 
+            try:
+                # Best-effort fallback: treat the assistant output as the final text
+                fallback = self.get_tool(
+                    name="response",
+                    method=None,
+                    args={"text": msg},
+                    message=msg,
+                    loop_data=self.loop_data,
+                )
+                await self.handle_intervention()
+                await fallback.before_execution(text=msg)
+                await self.handle_intervention()
+                response = await fallback.execute(text=msg)
+                await self.handle_intervention()
+                await fallback.after_execution(response)
+                await self.handle_intervention()
+                if response.break_loop:
+                    return response.message
+            except Exception:
+                pass
+
     async def handle_reasoning_stream(self, stream: str):
+        await self.handle_intervention()
         await self.call_extensions(
             "reasoning_stream",
             loop_data=self.loop_data,
@@ -753,6 +903,7 @@ class Agent:
         )
 
     async def handle_response_stream(self, stream: str):
+        await self.handle_intervention()
         try:
             if len(stream) < 25:
                 return  # no reason to try
@@ -772,9 +923,79 @@ class Agent:
         self, name: str, method: str | None, args: dict, message: str, loop_data: LoopData | None, **kwargs
     ):
         from python.tools.unknown import Unknown
-        from python.helpers.tool import Tool
+        from python.helpers.tool import Tool, Response
 
         classes = []
+
+        # try runtime tool registry first (if available)
+        runtime_tool = None
+        try:
+            from python.runtime import tool_registry as runtime_tool_registry  # type: ignore
+        except Exception:
+            runtime_tool_registry = None
+        else:
+            try:
+                runtime_tool = runtime_tool_registry.get(name)
+            except Exception:
+                runtime_tool = None
+
+        if runtime_tool:
+
+            class RuntimeToolAdapter(Tool):
+                def __init__(
+                    self,
+                    *,
+                    runtime_tool_instance,
+                    agent: "Agent",
+                    name: str,
+                    method: str | None,
+                    args: dict,
+                    message: str,
+                    loop_data: LoopData | None,
+                    **adapter_kwargs,
+                ):
+                    super().__init__(
+                        agent=agent,
+                        name=name,
+                        method=method,
+                        args=args,
+                        message=message,
+                        loop_data=loop_data,
+                        **adapter_kwargs,
+                    )
+                    self._runtime_tool = runtime_tool_instance
+
+                async def execute(self, **exec_kwargs) -> Response:
+                    run = getattr(self._runtime_tool, "run", None)
+                    if run is None or not callable(run):
+                        raise RepairableException(
+                            f"Runtime tool '{self.name}' does not expose an async run method."
+                        )
+
+                    outcome = run(**exec_kwargs)
+                    if asyncio.iscoroutine(outcome):
+                        outcome = await outcome
+
+                    if isinstance(outcome, Response):
+                        return outcome
+                    if isinstance(outcome, dict):
+                        message = str(outcome.get("message", outcome))
+                        break_loop = bool(outcome.get("break_loop", False))
+                    else:
+                        message = str(outcome)
+                        break_loop = False
+                    return Response(message=message, break_loop=break_loop)
+
+            return RuntimeToolAdapter(
+                runtime_tool_instance=runtime_tool,
+                agent=self,
+                name=name,
+                method=method,
+                args=args,
+                message=message,
+                loop_data=loop_data,
+                **kwargs,
+            )
 
         # try agent tools first
         if self.config.profile:

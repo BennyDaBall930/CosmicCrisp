@@ -105,8 +105,8 @@ class SubAgentManager:
         token_service: TokenService,
         prompt_manager: PromptManager,
         tool_registry: ToolRegistry,
-        max_depth: int,
-        timeout: float,
+        max_depth: Optional[int],
+        timeout: Optional[float],
         observability: Optional[Observability] = None,
     ) -> None:
         self.memory = memory
@@ -130,7 +130,7 @@ class SubAgentManager:
         orchestrator: "AgentOrchestrator",
         run_id: Optional[str] = None,
     ) -> str:
-        if depth >= self.max_depth:
+        if self.max_depth is not None and depth >= self.max_depth:
             return await orchestrator._invoke_tool(
                 parent_session,
                 analysis,
@@ -148,6 +148,13 @@ class SubAgentManager:
         if enter:
             await enter(sub_session)
         try:
+            if self.timeout is None:
+                return await orchestrator._invoke_tool(
+                    sub_session,
+                    analysis,
+                    run_id=run_id,
+                    task_id=task.id,
+                )
             return await asyncio.wait_for(
                 orchestrator._invoke_tool(
                     sub_session,
@@ -275,7 +282,9 @@ class AgentOrchestrator:
 
             completed: List[Task] = []
             loop_count = 0
-            while planner.has_tasks() and loop_count < self.max_loops:
+            while planner.has_tasks() and (
+                self.max_loops is None or loop_count < self.max_loops
+            ):
                 task = planner.next_task()
                 if task is None:
                     break
@@ -554,7 +563,9 @@ class AgentOrchestrator:
 
                     completed: List[Task] = []
                     loop_count = 0
-                    while planner.has_tasks() and loop_count < self.max_loops:
+                    while planner.has_tasks() and (
+                        self.max_loops is None or loop_count < self.max_loops
+                    ):
                         if cancel_event.is_set():
                             yield self._format_event(
                                 "error",
