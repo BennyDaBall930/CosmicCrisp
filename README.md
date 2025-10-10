@@ -264,6 +264,60 @@ TTS_MULTILINGUAL=true
 TTS_LANGUAGE_ID=de  # German, French, Spanish, etc.
 ```
 
+### XTTS Sidecar Setup (Coqui TTS)
+
+For advanced voice synthesis with Coqui XTTS, Apple Zero uses a local sidecar process that runs on-demand (or at startup) to provide high-quality multilingual TTS with voice cloning capabilities.
+
+#### Quick XTTS Setup
+
+```bash
+# 1. Pre-download XTTS model (recommended for faster startup)
+./dev/macos/setup.sh
+
+# 2. Run the application normally
+./dev/macos/run.sh
+
+# The XTTS sidecar will launch automatically at app startup
+```
+
+#### Sidecar Management
+
+The XTTS sidecar is managed automatically but can be controlled via environment variables:
+
+```env
+# Disable automatic sidecar start (use browser TTS fallback instead)
+A0_DISABLE_SIDECAR_AUTOSTART=1
+
+# Override sidecar URL (default: http://127.0.0.1:7055)
+TTS_SIDECAR_URL=http://127.0.0.1:7999
+
+# Force sidecar usage even if native Coqui available
+TTS_FORCE_SIDECAR=1
+```
+
+#### Sidecar Features
+
+- **Automatic Startup**: Launches at app initialization for immediate TTS availability
+- **Health Monitoring**: Automatic health checks and restart on failure
+- **Resource Management**: Tracks memory/CPU usage for optimization
+- **Fallback Handling**: Graceful degradation to browser TTS if sidecar unavailable
+
+#### Troubleshooting XTTS
+
+```bash
+# Check sidecar logs
+tail -f logs/tts_sidecar.err
+tail -f logs/tts_sidecar.out
+
+# Manual sidecar restart
+pkill -f "python.*sidecar"
+./run.sh  # Launches fresh sidecar instance
+
+# Force browser TTS fallback
+export A0_DISABLE_SIDECAR_AUTOSTART=1
+./run.sh
+```
+
 ### Fallback to Browser TTS
 
 If Chatterbox fails to initialize or TTS is disabled, the system falls back to pyttsx-based browser TTS. This provides basic cross-platform compatibility but lacks the advanced features of Chatterbox.
@@ -508,7 +562,7 @@ This project is the macOS evolution of the amazing **Agent Zero** framework! App
 ### 🌟 The Agent Zero Team
 
 A huge thank you to the original Agent Zero contributors:
-- **[Agent Zero Core Team](https://github.com/frdel/agent_zero)** - For creating the foundation that made all of this possible!
+- **[Agent Zero Core Team](https://github.com/agent0ai/agent-zero)** - For creating the foundation that made all of this possible!
 
 ### 🤝 Special Thanks to
 

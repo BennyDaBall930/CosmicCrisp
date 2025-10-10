@@ -14,6 +14,7 @@ import io
 import logging
 import threading
 import time
+import psutil
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Mapping, Optional
 import os
@@ -48,6 +49,45 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_ID = "tts_models/multilingual/multi-dataset/xtts_v2"
+
+
+def _get_resource_usage() -> Dict[str, float]:
+    """Get current system resource usage statistics."""
+    try:
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        cpu_percent = process.cpu_percent(interval=0.1)
+
+        # Get GPU memory if available
+        gpu_memory_mb = 0.0
+        if torch.cuda.is_available():
+            try:
+                gpu_memory_mb = torch.cuda.memory_allocated() / (1024 * 1024)
+            except Exception:
+                pass
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            try:
+                # MPS memory tracking is limited, but we can try
+                gpu_memory_mb = torch.mps.current_allocated_memory() / (1024 * 1024) if hasattr(torch, 'mps') else 0.0
+            except Exception:
+                pass
+
+        return {
+            "memory_rss_mb": memory_info.rss / (1024 * 1024),
+            "memory_vms_mb": memory_info.vms / (1024 * 1024),
+            "cpu_percent": cpu_percent,
+            "gpu_memory_mb": gpu_memory_mb,
+            "timestamp": time.time(),
+        }
+    except Exception as e:
+        logger.warning(f"Failed to collect resource usage: {e}")
+        return {
+            "memory_rss_mb": 0.0,
+            "memory_vms_mb": 0.0,
+            "cpu_percent": 0.0,
+            "gpu_memory_mb": 0.0,
+            "timestamp": time.time(),
+        }
 
 
 def _pick_device(prefer: Optional[str] = None) -> str:
@@ -169,6 +209,8 @@ class XTTSBackend:
         chunks = self._chunk_text(text)
         wavs: list[torch.Tensor] = []
 
+        start_resources = _get_resource_usage()
+
         logger.debug(
             "xtts synthesize start",
             extra={
@@ -177,6 +219,8 @@ class XTTSBackend:
                 "speaker": speaker,
                 "language": language,
                 "speaker_wav": bool(speaker_wav),
+                "initial_memory_mb": start_resources["memory_rss_mb"],
+                "initial_cpu_percent": start_resources["cpu_percent"],
             },
         )
 
@@ -505,15 +549,22 @@ class SidecarXTTSBackend:
 def wav_header(sample_rate: int, channels: int = 1, bits_per_sample: int = 16, data_bytes: Optional[int] = None) -> bytes:
     block_align = channels * (bits_per_sample // 8)
     byte_rate = sample_rate * block_align
-    data_size = data_bytes if data_bytes is not None else 0xFFFFFFFF
-    riff_size = 36 + data_size
+
+    # For streaming (data_bytes is None), use placeholder values
+    if data_bytes is None:
+        riff_size = 0xFFFFFFFF  # Unknown length for streaming
+        data_size = 0xFFFFFFFF  # Unknown data size for streaming
+    else:
+        data_size = data_bytes
+        riff_size = 36 + data_size  # RIFF chunk size = header size + data size
+
     buf = io.BytesIO()
     buf.write(b"RIFF")
     buf.write(int.to_bytes(riff_size & 0xFFFFFFFF, 4, "little"))
     buf.write(b"WAVE")
     buf.write(b"fmt ")
-    buf.write(int.to_bytes(16, 4, "little"))
-    buf.write(int.to_bytes(1, 2, "little"))
+    buf.write(int.to_bytes(16, 4, "little"))  # Format chunk size
+    buf.write(int.to_bytes(1, 2, "little"))   # Audio format (PCM)
     buf.write(int.to_bytes(channels, 2, "little"))
     buf.write(int.to_bytes(sample_rate, 4, "little"))
     buf.write(int.to_bytes(byte_rate, 4, "little"))

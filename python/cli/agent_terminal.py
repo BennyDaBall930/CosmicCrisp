@@ -28,6 +28,36 @@ def _read_env(key: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
+def _is_privileged_command(command: str) -> tuple[bool, str]:
+    """Check if command requires privileged execution and return reason."""
+    stripped = command.strip()
+
+    # High-impact operations that require approval
+    privileged_commands = {
+        "./run.sh": "run.sh execution - system startup script",
+        "run.sh": "run.sh execution - system startup script",
+        "bash ./run.sh": "run.sh execution - system startup script",
+        "sudo": "system administrator privileges",
+        "systemctl": "system service management",
+        "service": "system service control",
+        "shutdown": "system shutdown/restart",
+        "reboot": "system reboot",
+        "halt": "system halt",
+        "poweroff": "system power off",
+    }
+
+    # Check for exact matches
+    if stripped in privileged_commands:
+        return True, privileged_commands[stripped]
+
+    # Check for command starts
+    for privileged_cmd, reason in privileged_commands.items():
+        if stripped.startswith(privileged_cmd + " "):
+            return True, reason
+
+    return False, ""
+
+
 async def fetch_csrf(session: ClientSession, base: str, auth: Optional[BasicAuth]) -> str:
     url = base.rstrip("/") + "/csrf_token"
     async with session.get(url, auth=auth) as resp:
@@ -60,6 +90,14 @@ async def terminal_start(
 async def terminal_write(
     session: ClientSession, base: str, csrf: str, auth: Optional[BasicAuth], session_id: str, data: str
 ) -> dict:
+    # Block run.sh execution for security
+    stripped_data = data.strip()
+    if stripped_data.startswith("./run.sh") or stripped_data.startswith("bash ./run.sh") or stripped_data == "./run.sh" or stripped_data == "run.sh":
+        return {
+            "success": False,
+            "error": "Execution of run.sh is blocked for security reasons. Use the privileged command system instead."
+        }
+
     url = base.rstrip("/") + "/terminal_write"
     headers = {"X-CSRF-Token": csrf}
     payload = {"session_id": session_id, "data": data}
@@ -236,4 +274,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

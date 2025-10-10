@@ -80,7 +80,7 @@ torchaudio==2.4.0
 
 # improves prosody; requires espeak (brew install espeak)
 phonemizer>=3.3.0
-kokoro>=0.9.4
+# kokoro>=0.9.4  # Removed - using streaming-only TTS engines now
 
 # SearXNG runtime (import dependency)
 whitenoise==6.9.0

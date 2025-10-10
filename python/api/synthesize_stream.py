@@ -105,12 +105,6 @@ class SynthesizeStream(ApiHandler):
             except Exception as e:
                 return Response(str(e), status=500, mimetype="text/plain")
 
-        if engine == "kokoro":
-            try:
-                return self._stream_kokoro(text, filtered_style, input, tts_settings)
-            except Exception as e:
-                return Response(str(e), status=500, mimetype="text/plain")
-
         if engine == "piper_vc":
             try:
                 return self._stream_piper_vc(text, filtered_style, input, tts_settings)
@@ -289,66 +283,6 @@ class SynthesizeStream(ApiHandler):
                     (
                         "synthesize_stream complete (xtts) text_len=%d chunks=%d bytes=%d duration_ms=%d"
                     ),
-                    len(text),
-                    chunk_count,
-                    bytes_sent,
-                    total_ms,
-                )
-
-        return Response(stream_with_context(generator()), mimetype="audio/wav")
-
-    def _stream_kokoro(self, text: str, style: dict, payload: dict, tts_settings: dict) -> Response:
-        try:
-            from python.helpers import kokoro_tts
-        except Exception as exc:
-            raise RuntimeError(f"Kokoro unavailable: {exc}")
-
-        kokoro_cfg = tts_settings.get("kokoro", {}) if isinstance(tts_settings, dict) else {}
-        voice = (
-            style.get("speaker")
-            or style.get("voice")
-            or kokoro_cfg.get("voice")
-            or "am_puck,am_onyx"
-        )
-        speed_raw = style.get("speed", kokoro_cfg.get("speed", 1.1))
-        try:
-            speed = float(speed_raw)
-        except Exception:
-            speed = 1.1
-        sr_raw = style.get("sample_rate", kokoro_cfg.get("sample_rate", 24_000))
-        try:
-            sample_rate = int(sr_raw)
-        except Exception:
-            sample_rate = 24_000
-
-        start_time = time.perf_counter()
-        bytes_sent = 0
-        chunk_count = 0
-
-        try:
-            audio_b64 = kokoro_tts.synthesize_sentences_sync([text], voice=voice, speed=speed, sample_rate=sample_rate)
-        except Exception as exc:
-            raise RuntimeError(str(exc))
-        audio_bytes = base64.b64decode(audio_b64.encode("ascii"))
-        buffer = io.BytesIO(audio_bytes)
-        with wave.open(buffer, "rb") as wf:
-            sr = wf.getframerate()
-            pcm_data = wf.readframes(wf.getnframes())
-
-        def generator() -> Iterator[bytes]:
-            nonlocal bytes_sent, chunk_count
-            try:
-                header = self._wav_header(sr)
-                bytes_sent += len(header)
-                yield header
-                if pcm_data:
-                    bytes_sent += len(pcm_data)
-                    chunk_count += 1
-                    yield pcm_data
-            finally:
-                total_ms = int((time.perf_counter() - start_time) * 1000)
-                logger.info(
-                    "synthesize_stream complete (kokoro) text_len=%d chunks=%d bytes=%d duration_ms=%d",
                     len(text),
                     chunk_count,
                     bytes_sent,
