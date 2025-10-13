@@ -18,12 +18,12 @@ Apple Zero is an AI agent framework based on the open-source project Agent Zero.
 - Visit the project's GitHub repository for discussions and guides.
 
 **6. My `code_execution` tool doesn't work, what's wrong?**
-- Ensure the required system packages are installed and that `python` is available in your environment. Re-run `./dev/macos/setup.sh` if needed.
+- Ensure the required system packages are installed and that `python` is available in your environment. Re-run `./setup.sh` if needed.
 
 ## Troubleshooting
 
 **Installation**
-- Re-run the setup script to ensure all dependencies are installed: `./dev/macos/setup.sh`.
+- Re-run the setup script to ensure all dependencies are installed: `./setup.sh`.
 - Verify your Python version is supported.
 
 **Usage**

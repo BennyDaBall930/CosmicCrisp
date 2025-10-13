@@ -80,10 +80,10 @@ Track everything with metrics, logs, and shiny dashboards. Because who doesn't l
 
 ```bash
 # 1. Bootstrap everything (this is the magic button)
-./dev/macos/setup.sh
+./setup.sh
 
 # 2. Blast off!
-./dev/macos/run.sh
+./run.sh
 
 # 3. Your AI awaits...
 open http://localhost:8080
@@ -197,7 +197,7 @@ Need a second voice profile or multilingual narration with speaker cloning? Swit
 - Built-in speaker presets (`female-en-5`, `male-de-4`, etc.)
 - Optional 5–10s reference clips for custom voice cloning (`speaker_wav_path`)
 
-All XTTS controls live in the UI (`Settings → Speech`), so no additional environment variables are required. Pick the model (`tts_models/multilingual/multi-dataset/xtts_v2` is the default), choose the device (`auto`, `cpu`, `mps`, `cuda`), and drop in a reference WAV if you want to mimic a specific voice.
+NeuTTS-Air ships enabled by default. Configure streaming, sample rate, and quality in `Settings → Speech` or by editing `conf/tts.toml`. Reference voices are uploaded via the Voice Lab panel and cached under `data/tts/neutts/voices/<id>`.
 
 ### Configuration Options
 
@@ -207,134 +207,98 @@ All XTTS controls live in the UI (`Settings → Speech`), so no additional envir
 | **Voice Config File** | `TTS_CONFIG_PATH` | (runtime lookup) | Path to JSON/TOML configuration file |
 | **Multilingual Model** | `TTS_MULTILINGUAL` | `false` | Enable multilingual Chatterbox model |
 | **Sample Rate** | `TTS_SAMPLE_RATE` | `24000` | Audio output sample rate (Hz) |
-| **Emotion Intensity** | `TTS_EXAGGERATION` | `0.5` | Emotional expression level (0.0-1.0) |
-| **Voice Consistency** | `TTS_CFG` | `0.35` | Classifier-free guidance strength |
-| **Reference Audio** | `TTS_AUDIO_PROMPT_PATH` | (none) | WAV file for voice style reference |
-| **Language** | `TTS_LANGUAGE_ID` | `"en"` | Language code for multilingual model |
-| **Max Text Length** | `TTS_MAX_CHARS` | `600` | Maximum characters per synthesis chunk |
-| **Silence Between Chunks** | `TTS_JOIN_SILENCE_MS` | `120` | Milliseconds of silence between text chunks |
+| Setting | Env Variable | Default | Description |
+| --- | --- | --- | --- |
+| **Streaming Enabled** | `TTS_STREAM_DEFAULT` | `true` | Stream 24 kHz PCM in ~0.3 s chunks |
+| **Sample Rate** | `TTS_SAMPLE_RATE` | `24000` | Output sample rate used across the app |
+| **Quality Tier** | `NEUTTS_QUALITY_DEFAULT` | `q4` | `q4` for maximum responsiveness, `q8` for higher fidelity |
+| **Backbone Repo** | `NEUTTS_BACKBONE_REPO` | `neuphonic/neutts-air-q4-gguf` | Hugging Face repo for the GGUF backbone |
+| **Codec Repo** | `NEUTTS_CODEC_REPO` | `neuphonic/neucodec-onnx-decoder` | Hugging Face repo storing the ONNX codec decoder |
+| **Model Cache** | `NEUTTS_MODEL_CACHE_DIR` | `data/tts/neutts/models` | Directory for downloaded weights |
 
-### TTS Configuration Examples
+### NeuTTS Configuration Examples
 
-**Basic Setup (.env):**
+**Environment overrides (.env):**
 ```env
-# Simple English voice with moderate emotion
-ENABLE_TTS=true
-TTS_EXAGGERATION=0.6
-TTS_CFG=0.4
-TTS_LANGUAGE_ID=en
+# prefer high fidelity streaming and custom cache path
+TTS_STREAM_DEFAULT=true
+TTS_SAMPLE_RATE=24000
+NEUTTS_QUALITY_DEFAULT=q8
+NEUTTS_MODEL_CACHE_DIR=/Volumes/External/cache/neutts
 ```
 
-**Advanced Setup (runtime.toml):**
-```toml
-[tts.chatterbox]
-multilingual = false  # Set to true for language support
-sample_rate = 24000
-exaggeration = 0.5   # Voice emotion intensity
-cfg = 0.35          # Voice consistency
-max_chars = 600     # Text chunk size
-join_silence_ms = 120 # Gap between chunks
-
-# Optional reference voice (copy-paste audio sample)
-# audio_prompt_path = "./reference-voice.wav"
-
-# Device targeting (auto-detects MPS/CUDA/CPU)
-# device = "auto"  # or "mps", "cuda", "cpu"
-```
-
-**Coqui XTTS (runtime.toml):**
+**Runtime override (conf/tts.toml):**
 ```toml
 [tts]
-engine = "xtts"
-
-[tts.xtts]
-model_id = "tts_models/multilingual/multi-dataset/xtts_v2"
-device = "auto"
-language = "en"
-speaker = "female-en-5"
+provider = "neutts"
 sample_rate = 24000
-max_chars = 400
-join_silence_ms = 80
-# speaker_wav_path = "./voices/custom.wav"  # Optional cloning reference
+stream_default = true
+
+[tts.neutts]
+backbone_device = "mps"
+codec_device = "cpu"
+quality_default = "q4"
+model_cache_dir = "data/tts/neutts/models"
 ```
 
-**Multilingual Voices:**
-```env
-TTS_MULTILINGUAL=true
-TTS_LANGUAGE_ID=de  # German, French, Spanish, etc.
+
+
+```toml
+[tts]
+provider = "neutts"
+sample_rate = 24000
+stream_default = true
+
+[tts.neutts]
+backbone_repo = "neuphonic/neutts-air-q4-gguf"
+codec_repo = "neuphonic/neucodec-onnx-decoder"
+backbone_device = "mps"
+codec_device = "cpu"
+quality_default = "q4"
+model_cache_dir = "data/tts/neutts/models"
 ```
 
-### XTTS Sidecar Setup (Coqui TTS)
+### NeuTTS-Air (Native)
 
-For advanced voice synthesis with Coqui XTTS, Apple Zero uses a local sidecar process that runs on-demand (or at startup) to provide high-quality multilingual TTS with voice cloning capabilities.
+NeuTTS-Air ships as the only speech engine in Apple Zero. The model runs locally on Apple Silicon using Metal acceleration for the GGUF backbone and ONNX for codec decoding. Outputs are perceptually watermarked by design.
 
-#### Quick XTTS Setup
+#### Features
+
+- Sub-500 ms streaming latency on M-series hardware (200–400 ms chunks)
+- Instant voice cloning from a 3–15 second mono WAV plus reference text
+- Cached reference codes stored under `data/tts/neutts/voices/<id>`
+- Quality toggle (Q4 default, Q8 for higher fidelity)
+- REST + WebSocket endpoints: `/runtime/tts/voices` and `/runtime/tts/speak`
+- Dedicated “Voice Lab” UI for managing uploads, recordings, and previews
+
+#### One-Time Setup
 
 ```bash
-# 1. Pre-download XTTS model (recommended for faster startup)
-./dev/macos/setup.sh
-
-# 2. Run the application normally
-./dev/macos/run.sh
-
-# The XTTS sidecar will launch automatically at app startup
+brew install espeak
+pip install -r requirements.txt  # includes phonemizer, soundfile, onnxruntime, llama-cpp-python
 ```
 
-#### Sidecar Management
+NeuTTS downloads model weights on demand from Hugging Face (`neuphonic/neutts-air-q4-gguf` and `neuphonic/neucodec-onnx-decoder`). The cache lives in `data/tts/neutts/models` and can be relocated via `tts.neutts.model_cache_dir`.
 
-The XTTS sidecar is managed automatically but can be controlled via environment variables:
+#### Managing Voices
 
-```env
-# Disable automatic sidecar start (use browser TTS fallback instead)
-A0_DISABLE_SIDECAR_AUTOSTART=1
+Use the Voice Lab panel to upload or record a reference clip (3–15 s, mono, 16–44 kHz) and provide a matching transcript. NeuTTS caches the pre-encoded reference (`ref.codes.npy`) so subsequent requests avoid warm-up cost. Voices can be renamed, set as default, previewed, or deleted. A reset action is available via `POST /runtime/tts/voices/reset`.
 
-# Override sidecar URL (default: http://127.0.0.1:7055)
-TTS_SIDECAR_URL=http://127.0.0.1:7999
+#### Streaming API
 
-# Force sidecar usage even if native Coqui available
-TTS_FORCE_SIDECAR=1
+```http
+POST /runtime/tts/speak
+{
+  "text": "Plan a narrated overview of Cosmic Crisp.",
+  "voice_id": "<optional-custom-voice>",
+  "stream": true
+}
 ```
 
-#### Sidecar Features
+Responses stream 24 kHz mono PCM WAV data. Metadata headers (`X-NeuTTS-*`) include the voice id, sample rate, and watermark flag.
+### Legacy Engines
 
-- **Automatic Startup**: Launches at app initialization for immediate TTS availability
-- **Health Monitoring**: Automatic health checks and restart on failure
-- **Resource Management**: Tracks memory/CPU usage for optimization
-- **Fallback Handling**: Graceful degradation to browser TTS if sidecar unavailable
-
-#### Troubleshooting XTTS
-
-```bash
-# Check sidecar logs
-tail -f logs/tts_sidecar.err
-tail -f logs/tts_sidecar.out
-
-# Manual sidecar restart
-pkill -f "python.*sidecar"
-./run.sh  # Launches fresh sidecar instance
-
-# Force browser TTS fallback
-export A0_DISABLE_SIDECAR_AUTOSTART=1
-./run.sh
-```
-
-### Fallback to Browser TTS
-
-If Chatterbox fails to initialize or TTS is disabled, the system falls back to pyttsx-based browser TTS. This provides basic cross-platform compatibility but lacks the advanced features of Chatterbox.
-
-### Migration from Kokoro
-
-**❌ Breaking Changes:**
-- `tts_kokoro` settings in configuration files are completely ignored
-- Kokoro-dependent voice parameters must be migrated to Chatterbox equivalents
-- Existing voice configuration files need format updates
-
-**✅ Migration Path:**
-1. Remove all `tts_kokoro` configuration blocks
-2. Add Chatterbox configuration using the settings above
-3. Adjust emotion levels (Kokoro values may not translate directly)
-4. Test audio output quality after migration
-5. Enable `ENABLE_TTS=false` temporarily to use browser fallback during transition
+Chatterbox, XTTS, Piper VC, and Kokoro integrations have been removed. NeuTTS-Air is the sole speech engine and does not fall back to browser synthesis. Any legacy environment variables (`TTS_SIDECAR_URL`, `TTS_ENGINE`, etc.) are ignored after running `tools/migrate_to_neutts.py`.
 
 ## Quick Start
 
@@ -342,16 +306,16 @@ If Chatterbox fails to initialize or TTS is disabled, the system falls back to p
 
 - macOS 12+
 - Python 3.10+
-- Homebrew (installer in `dev/macos/setup.sh` will bootstrap if missing)
+- Homebrew (the macOS flow calls it automatically through `./setup.sh`)
 
 ### Bootstrap
 
 ```bash
 # 1. Install native dependencies, virtualenv, Playwright cache
-./dev/macos/setup.sh
+./setup.sh
 
 # 2. Launch the combined FastAPI + UI runtime
-./dev/macos/run.sh
+./run.sh
 
 # 3. Open the web client
 open http://localhost:8080
@@ -584,7 +548,7 @@ This project inherits the wonderful MIT license from the original Cosmic Crisp /
 
 <p><strong>The future is here, and it's delightfully user-friendly!</strong></p>
 
-[![Get Started](https://img.shields.io/badge/Get%20Started-Today-green?style=for-the-badge&logo=apple)](./dev/macos/setup.sh)
+[![Get Started](https://img.shields.io/badge/Get%20Started-Today-green?style=for-the-badge&logo=apple)](./setup.sh)
 
 <small>"Because who needs boring, when you can have brilliant?" - Apple Zero Team</small>
 

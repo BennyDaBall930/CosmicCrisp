@@ -34,6 +34,8 @@ DEFAULT_TOKEN_BUDGETS: Dict[str, int] = {
     "local-mlx": 8_192,
 }
 
+DEFAULT_TTS_SAMPLE_RATE = 24_000
+
 
 @dataclass(slots=True)
 class EmbeddingsConfig:
@@ -125,6 +127,26 @@ class RouterConfig:
     models: Sequence[RouterModelConfig] = field(default_factory=tuple)
 
 
+@dataclass(slots=True)
+class NeuTTSConfig:
+    backbone_repo: str = "neuphonic/neutts-air-q4-gguf"
+    codec_repo: str = "neuphonic/neucodec-onnx-decoder"
+    backbone_device: str = "mps"
+    codec_device: str = "cpu"
+    quality_default: str = "q4"
+    model_cache_dir: Path = Path("data/tts/neutts/models")
+    stream_chunk_seconds: float = 0.32
+    default_voice_id: Optional[str] = None
+
+
+@dataclass(slots=True)
+class TTSConfig:
+    provider: str = "neutts"
+    sample_rate: int = DEFAULT_TTS_SAMPLE_RATE
+    stream_default: bool = True
+    neutts: NeuTTSConfig = field(default_factory=NeuTTSConfig)
+
+
 
 @dataclass(slots=True)
 class RuntimeConfig:
@@ -136,6 +158,7 @@ class RuntimeConfig:
     agent: AgentConfig = field(default_factory=AgentConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
+    tts: TTSConfig = field(default_factory=TTSConfig)
 
 
 def _load_config_file() -> Dict[str, Any]:
@@ -152,6 +175,7 @@ def _load_config_file() -> Dict[str, Any]:
             "python/runtime.toml",
         )
     )
+    config: Dict[str, Any] = {}
     for candidate in candidates:
         if candidate.is_file():
             if tomllib is None:
@@ -159,8 +183,22 @@ def _load_config_file() -> Dict[str, Any]:
                     "Runtime configuration file specified but tomllib is unavailable."
                 )
             with candidate.expanduser().open("rb") as fh:
-                return tomllib.load(fh)
-    return {}
+                config = tomllib.load(fh)
+            break
+    tts_path = Path("conf/tts.toml")
+    if tts_path.is_file():
+        if tomllib is None:
+            raise RuntimeError("TTS configuration file present but tomllib is unavailable.")
+        with tts_path.expanduser().open("rb") as fh:
+            tts_data = tomllib.load(fh)
+        if isinstance(tts_data, Mapping):
+            if "tts" in tts_data and isinstance(tts_data["tts"], Mapping):
+                merged = dict(config.get("tts", {}))
+                merged.update(tts_data["tts"])  # type: ignore[arg-type]
+                config["tts"] = merged
+            else:
+                config["tts"] = tts_data  # fallback: entire file is the section
+    return config
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -505,6 +543,110 @@ def load_runtime_config() -> RuntimeConfig:
         ),
     )
 
+    tts_section = _lookup(settings, "tts", default={})
+    neutts_section = _lookup(settings, "tts", "neutts", default={})
+    tts_provider = str(
+        env.get(
+            "TTS_PROVIDER",
+            tts_section.get("provider", "neutts") if isinstance(tts_section, Mapping) else "neutts",
+        )
+    ).strip() or "neutts"
+    tts_sample_rate = _as_int(
+        env.get(
+            "TTS_SAMPLE_RATE",
+            tts_section.get("sample_rate", DEFAULT_TTS_SAMPLE_RATE) if isinstance(tts_section, Mapping) else DEFAULT_TTS_SAMPLE_RATE,
+        ),
+        DEFAULT_TTS_SAMPLE_RATE,
+    )
+    tts_stream_default = _as_bool(
+        env.get(
+            "TTS_STREAM_DEFAULT",
+            tts_section.get("stream_default", True) if isinstance(tts_section, Mapping) else True,
+        ),
+        True,
+    )
+    default_voice_raw = env.get(
+        "NEUTTS_DEFAULT_VOICE_ID",
+        _lookup(neutts_section, "default_voice_id", default=None) if isinstance(neutts_section, Mapping) else None,
+    )
+    if default_voice_raw is None:
+        default_voice_id = None
+    else:
+        _text = str(default_voice_raw).strip()
+        default_voice_id = None if _text.lower() in {"none", "null", "undefined", ""} else _text
+
+    neutts_config = NeuTTSConfig(
+        backbone_repo=str(
+            env.get(
+                "NEUTTS_BACKBONE_REPO",
+                _lookup(neutts_section, "backbone_repo", default="neuphonic/neutts-air-q4-gguf")
+                if isinstance(neutts_section, Mapping)
+                else "neuphonic/neutts-air-q4-gguf",
+            )
+        ).strip()
+        or "neuphonic/neutts-air-q4-gguf",
+        codec_repo=str(
+            env.get(
+                "NEUTTS_CODEC_REPO",
+                _lookup(neutts_section, "codec_repo", default="neuphonic/neucodec-onnx-decoder")
+                if isinstance(neutts_section, Mapping)
+                else "neuphonic/neucodec-onnx-decoder",
+            )
+        ).strip()
+        or "neuphonic/neucodec-onnx-decoder",
+        backbone_device=str(
+            env.get(
+                "NEUTTS_BACKBONE_DEVICE",
+                _lookup(neutts_section, "backbone_device", default="mps")
+                if isinstance(neutts_section, Mapping)
+                else "mps",
+            )
+        ).strip()
+        or "mps",
+        codec_device=str(
+            env.get(
+                "NEUTTS_CODEC_DEVICE",
+                _lookup(neutts_section, "codec_device", default="cpu")
+                if isinstance(neutts_section, Mapping)
+                else "cpu",
+            )
+        ).strip()
+        or "cpu",
+        quality_default=str(
+            env.get(
+                "NEUTTS_QUALITY_DEFAULT",
+                _lookup(neutts_section, "quality_default", default="q4")
+                if isinstance(neutts_section, Mapping)
+                else "q4",
+            )
+        ).strip()
+        or "q4",
+        model_cache_dir=Path(
+            env.get(
+                "NEUTTS_MODEL_CACHE_DIR",
+                _lookup(neutts_section, "model_cache_dir", default="data/tts/neutts/models")
+                if isinstance(neutts_section, Mapping)
+                else "data/tts/neutts/models",
+            )
+        ).expanduser(),
+        stream_chunk_seconds=_as_float(
+            env.get(
+                "NEUTTS_STREAM_CHUNK_SEC",
+                _lookup(neutts_section, "stream_chunk_seconds", default=0.32)
+                if isinstance(neutts_section, Mapping)
+                else 0.32,
+            ),
+            0.32,
+        ),
+        default_voice_id=default_voice_id,
+    )
+    tts = TTSConfig(
+        provider=tts_provider,
+        sample_rate=max(tts_sample_rate, 8_000),
+        stream_default=tts_stream_default,
+        neutts=neutts_config,
+    )
+
     json_log_setting = env.get(
         "OBSERVABILITY_LOG_PATH",
         _lookup(settings, "observability", "json_log_path", default="./logs/runtime_observability.jsonl"),
@@ -610,6 +752,7 @@ def load_runtime_config() -> RuntimeConfig:
         agent=agent,
         tools=tools,
         router=router,
+        tts=tts,
     )
 
 
@@ -623,6 +766,9 @@ __all__ = [
     "AgentConfig",
     "RouterModelConfig",
     "RouterConfig",
+    "TTSConfig",
+    "NeuTTSConfig",
     "DEFAULT_TOKEN_BUDGETS",
+    "DEFAULT_TTS_SAMPLE_RATE",
     "load_runtime_config",
 ]

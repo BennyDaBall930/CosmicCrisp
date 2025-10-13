@@ -8,11 +8,11 @@ Apple Zero is an AI agent framework based on the open-source project Agent Zero.
 1. Clone the repository and enter the project directory.
 2. Run the setup script:
    ```bash
-   ./dev/macos/setup.sh
+   ./setup.sh
    ```
 3. Start the agent:
    ```bash
-   ./dev/macos/run.sh
+   ./run.sh
    ```
 4. Open your browser and navigate to `http://localhost:8080`.
 
@@ -44,7 +44,7 @@ Create a `.env` file with your API keys.
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-Additional keys for other providers can be added as needed. Start the UI with `./dev/macos/run.sh` and configure settings through the web interface.
+Additional keys for other providers can be added as needed. Start the UI with `./run.sh` and configure settings through the web interface.
 
 ## Choosing Your LLMs
 In the settings UI select the desired provider for the chat, utility and embedding models. You can mix and match providers based on your API keys.
@@ -71,9 +71,9 @@ When Apple Zero runs on your Mac it listens on `http://localhost:8080`.
    ```
 2. Rerun the setup script to install new dependencies:
    ```bash
-   ./dev/macos/setup.sh
+   ./setup.sh
    ```
-3. Restart Apple Zero with `./dev/macos/run.sh`.
+3. Restart Apple Zero with `./run.sh`.
 
 ## In-Depth Guide for Full Binaries Installation
 For advanced customization refer to the project README and explore the scripts under `dev/macos/`.

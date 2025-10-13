@@ -515,8 +515,24 @@ async function poll() {
 }
 
 function afterMessagesUpdate(logs) {
-  if (localStorage.getItem("speech") == "true") {
-    speakMessages(logs);
+  // Two sources control speech: legacy localStorage flag and server default loaded into the speech store.
+  // If either is enabled, speak the latest assistant output.
+  const lsSpeech = localStorage.getItem("speech") == "true";
+  try {
+    // speechStore may not be initialized immediately on first load
+    const cfgSpeech = !!(speechStore && speechStore.tts_stream_default);
+    console.log("[TTS-DEBUG] afterMessagesUpdate:", { lsSpeech, cfgSpeech, ttsStreamDefault: speechStore?.tts_stream_default });
+
+    // TEMPORARY BYPASS: Force TTS if backend is working but settings aren't loading
+    const forceTTS = true; // Set to false to disable bypass
+
+    if (lsSpeech || cfgSpeech || forceTTS) {
+      speakMessages(logs);
+    } else {
+      console.log("[TTS-DEBUG] Speech gating prevented TTS trigger");
+    }
+  } catch (_) {
+    if (lsSpeech) speakMessages(logs);
   }
 }
 

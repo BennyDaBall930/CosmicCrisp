@@ -10,19 +10,17 @@ const log = (...args) => {
 
 export async function playStreamedTTS({
   text,
-  style = {},
-  targetChars = 200,
-  joinMs = 5,
+  voiceId = null,
   sampleRate = 24000,
-  firstChunkChars = 0,
-  engine = "chatterbox",
-  endpoint = "/synthesize_stream",
+  stream = true,
+  endpoint = "/runtime/tts/speak",
 }) {
   if (!text || !text.trim()) return null;
 
   const ctx = new AudioContext();
+  let effectiveSampleRate = sampleRate;
   const deviceRate = ctx.sampleRate;
-  const needResample = Math.abs(deviceRate - sampleRate) > 1;
+  let needResample = Math.abs(deviceRate - effectiveSampleRate) > 1;
   const capture = GT.__COSMIC_TTS_CAPTURE ? { buffers: [], rate: deviceRate } : null;
 
   if (ctx.state !== "running") {
@@ -164,7 +162,7 @@ export async function playStreamedTTS({
     };
   };
 
-  const resampler = makeResampler(sampleRate, deviceRate);
+  let resampler = makeResampler(effectiveSampleRate, deviceRate);
 
   const sampleStats = (buffer) => {
     if (!buffer.length) return { min: 0, max: 0 };
@@ -204,15 +202,14 @@ export async function playStreamedTTS({
     }
   };
 
+  const normalizedVoice = voiceId === "None" || voiceId === "null" || voiceId === "undefined" ? null : voiceId;
   const requestBody = {
     text,
-    style,
-    target_chars: targetChars,
-    join_silence_ms: joinMs,
-    first_chunk_chars: firstChunkChars || undefined,
-    engine,
+    voice_id: normalizedVoice || undefined,
+    stream,
   };
 
+  console.log("[TTS-DEBUG] Making TTS request to", endpoint, "with body:", requestBody);
   const doFetch = (path, options) => (typeof fetchApi === "function" ? fetchApi(path, options) : fetch(path, options));
 
   const response = await doFetch(endpoint, {
@@ -222,6 +219,8 @@ export async function playStreamedTTS({
     signal: abort.signal,
     body: JSON.stringify(requestBody),
   });
+
+  console.log("[TTS-DEBUG] TTS response status:", response.status, response.ok ? "OK" : "ERROR");
 
   if (!response.ok || !response.body) {
     let errorMessage = "TTS stream failed";
@@ -239,6 +238,13 @@ export async function playStreamedTTS({
   }
 
   const reader = response.body.getReader();
+  const serverSampleRate = response.headers.get("X-NeuTTS-Sample-Rate");
+  if (serverSampleRate && !Number.isNaN(Number(serverSampleRate))) {
+    effectiveSampleRate = Number(serverSampleRate);
+    needResample = Math.abs(deviceRate - effectiveSampleRate) > 1;
+    resampler = makeResampler(effectiveSampleRate, deviceRate);
+  }
+
   let headerBytes = new Uint8Array(0);
   let headerParsed = false;
   let fmt = null;
@@ -336,5 +342,5 @@ export async function playStreamedTTS({
     await cleanup({ immediate: true });
   };
 
-  return { stop, finished };
+  return { stop, finished, sampleRate: effectiveSampleRate };
 }

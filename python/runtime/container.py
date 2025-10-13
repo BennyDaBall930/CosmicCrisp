@@ -131,6 +131,31 @@ def get_agent_service():
     )
 
 
+@lru_cache(maxsize=1)
+def get_tts_provider():
+    from .audio import PROVIDERS
+
+    cfg = get_config().tts
+    provider_cls = PROVIDERS.get(cfg.provider.lower())
+    if provider_cls is None:
+        raise RuntimeError(f"Unsupported TTS provider '{cfg.provider}'")
+    neutts_cfg = cfg.neutts
+    model_cache_dir = neutts_cfg.model_cache_dir.expanduser()
+    data_root = model_cache_dir.parent
+    return provider_cls(
+        backbone_repo=neutts_cfg.backbone_repo,
+        codec_repo=neutts_cfg.codec_repo,
+        backbone_device=neutts_cfg.backbone_device,
+        codec_device=neutts_cfg.codec_device,
+        model_cache_dir=model_cache_dir,
+        stream_chunk_seconds=neutts_cfg.stream_chunk_seconds,
+        sample_rate=cfg.sample_rate,
+        quality_default=neutts_cfg.quality_default,
+        default_voice_id=neutts_cfg.default_voice_id,
+        data_root=data_root,
+    )
+
+
 embeddings = _LazyProxy(get_embeddings_service)
 memory = _LazyProxy(get_memory_store)
 tokens = _LazyProxy(get_token_service)
@@ -140,6 +165,7 @@ orchestrator = _LazyProxy(get_orchestrator)
 agent_service = _LazyProxy(get_agent_service)
 observability = _LazyProxy(get_observability)
 model_router = _LazyProxy(get_model_router)
+tts = _LazyProxy(get_tts_provider)
 
 
 __all__ = [
@@ -152,6 +178,7 @@ __all__ = [
     "agent_service",
     "observability",
     "model_router",
+    "tts",
     "get_config",
     "get_embeddings_service",
     "get_memory_store",
@@ -163,4 +190,5 @@ __all__ = [
     "get_prompt_manager",
     "get_observability",
     "get_model_router",
+    "get_tts_provider",
 ]

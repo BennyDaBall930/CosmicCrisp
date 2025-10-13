@@ -23,7 +23,7 @@ Apple Zero is the macOS-native evolution of the Cosmic Crisp / Agent Zero stack.
 ## Operational Checklist
 1. Install prerequisites and create the virtual environment (see [Installation](installation.md)).
 2. Populate `.env` with model API keys and router overrides.
-3. Launch the runtime with `./dev/macos/run.sh` or `python -m python.runtime.api.app`.
+3. Launch the runtime with `./run.sh` or `python -m python.runtime.api.app`.
 4. Open `http://localhost:8080` for the UI, or interact through the CLI entrypoints in `run/`.
 5. Rebuild embeddings or import legacy data using the helper CLIs in `python/runtime/tools` when migrating memory.
 

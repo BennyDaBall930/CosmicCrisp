@@ -1,40 +1,76 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VENV_DIR="${ROOT_DIR}/.venv-tts311"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OS_NAME="$(uname -s)"
 
-echo "[setup] Ensuring Python 3.11 via Homebrew..."
-if ! command -v python3.11 >/dev/null 2>&1; then
-  if ! command -v brew >/dev/null 2>&1; then
-    echo "Homebrew not found. Install Homebrew first: https://brew.sh" >&2
+echo "CosmicCrisp setup starting (OS=${OS_NAME})"
+
+# On macOS delegate to the comprehensive native script.
+if [[ "${OS_NAME}" == "Darwin" ]]; then
+  exec "${ROOT_DIR}/dev/macos/setup.sh" "$@"
+fi
+
+# -------- Linux / generic Unix flow --------
+
+cd "${ROOT_DIR}"
+
+if [[ ! -d ".git" ]]; then
+  echo "Please run this script from the repository root." >&2
+  exit 1
+fi
+
+PY_BIN="${PYTHON:-python3.12}"
+if ! command -v "${PY_BIN}" >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1; then
+    PY_BIN=python3
+  else
+    echo "Python 3.12+ is required. Install python3.12 or set PYTHON=/path/to/python before running setup." >&2
     exit 1
   fi
-  brew install python@3.11
-  brew link python@3.11 --force --overwrite || true
 fi
 
-PY311="$(command -v python3.11)"
-echo "[setup] Using Python at: ${PY311}"
-
-if [ ! -d "${VENV_DIR}" ]; then
-  echo "[setup] Creating venv at ${VENV_DIR}"
-  "${PY311}" -m venv "${VENV_DIR}"
+VENV_DIR="${ROOT_DIR}/venv"
+if [[ -d "${VENV_DIR}" ]]; then
+  echo "Removing existing virtual environment at ${VENV_DIR}"
+  rm -rf "${VENV_DIR}"
 fi
 
+echo "Creating virtual environment with ${PY_BIN}"
+"${PY_BIN}" -m venv "${VENV_DIR}"
 source "${VENV_DIR}/bin/activate"
-python --version
-pip install --upgrade pip setuptools wheel
 
-echo "[setup] Installing sidecar dependencies (TTS/Trainer + API libs)..."
-# Core runtime for XTTS/VC
-pip install --upgrade TTS trainer fastapi "uvicorn[standard]" soundfile
+echo "Upgrading pip and wheel"
+pip install --upgrade pip wheel
 
-# Ensure torch is present; allow pip to pick the right wheel (macOS CPU/MPS, CUDA, etc.)
-if ! python -c "import torch; import sys; print(torch.__version__)" >/dev/null 2>&1; then
-  echo "[setup] Installing PyTorch..."
-  pip install torch --index-url https://download.pytorch.org/whl/cpu || pip install torch
+echo "Installing project requirements"
+pip install -r requirements.txt
+
+if [[ -f "searxng/requirements.txt" ]]; then
+  echo "Installing SearXNG dependencies"
+  pip install -r searxng/requirements.txt -r searxng/requirements-server.txt
 fi
 
-echo "[setup] Done. To run the sidecar: ./run.sh"
+# Install espeak for phonemizer if available via package manager.
+if command -v apt-get >/dev/null 2>&1; then
+  echo "Installing espeak via apt-get (requires sudo)"
+  sudo apt-get update
+  sudo apt-get install -y espeak-ng espeak libespeak-ng1 || true
+elif command -v pacman >/dev/null 2>&1; then
+  echo "Installing espeak via pacman (requires sudo)"
+  sudo pacman -S --noconfirm espeak-ng || true
+elif command -v yum >/dev/null 2>&1; then
+  echo "Installing espeak via yum (requires sudo)"
+  sudo yum install -y espeak-ng espeak || true
+else
+  echo "Install 'espeak-ng' manually for phonemizer support." >&2
+fi
 
+echo "Installing Playwright Chromium runtime"
+export PLAYWRIGHT_BROWSERS_PATH="${ROOT_DIR}/tmp/playwright"
+playwright install chromium
+playwright install chromium --only-shell || true
+
+deactivate
+
+echo "Setup complete. Run './run.sh' to start the application."

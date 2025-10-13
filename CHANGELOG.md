@@ -1,5 +1,11 @@
 # Changelog
 
+## NeuTTS-Air Cutover
+- Replaced all legacy TTS integrations (Chatterbox, XTTS, Piper VC, Kokoro, browser fallback) with a unified NeuTTS-Air provider.
+- Added native Metal-accelerated GGUF + ONNX codec pipeline with streaming latency under 500 ms on Apple Silicon.
+- Introduced `/runtime/tts/*` APIs, on-disk voice cache (`data/tts/neutts`), and reset/migration tooling.
+- Updated requirements, docs, and macOS bootstrap to install phonemizer dependencies (espeak) and drop sidecar scripts.
+
 ## Local Memory Parity with Agent Zero
 - Default embeddings switched to Hugging Face `sentence-transformers/all-MiniLM-L6-v2` with a dedicated provider.
 - Memory store now records real provider/model metadata and prefers local sentence-transformers fallbacks.

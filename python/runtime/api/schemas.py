@@ -59,6 +59,26 @@ class BrowserContinueRequest(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 
+class TTSSpeakRequest(BaseModel):
+    text: str
+    voice_id: Optional[str] = None
+    stream: bool = True
+
+
+class TTSVoiceCreateRequest(BaseModel):
+    name: str
+    ref_text: str
+    audio_base64: str
+
+
+class TTSVoiceDeleteRequest(BaseModel):
+    voice_id: str
+
+class TTSDefaultRequest(BaseModel):
+    voice_id: Optional[str] = None
+
+
+
 __all__ = [
     "TaskKind",
     "ChatRequest",
@@ -69,4 +89,8 @@ __all__ = [
     "CancelRequest",
     "ResumeRequest",
     "BrowserContinueRequest",
+    "TTSSpeakRequest",
+    "TTSVoiceCreateRequest",
+    "TTSVoiceDeleteRequest",
+    "TTSDefaultRequest",
 ]

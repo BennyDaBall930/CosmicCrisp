@@ -27,12 +27,9 @@ flask[async]==3.0.3
 flask-basicauth==0.2.0
 flaredantic==0.1.4
 inputimeout==1.0.4
-chatterbox-tts; python_version < "3.12"
-TTS>=0.22.0,<0.23; python_version < "3.12"
-torchaudio==2.*
 simpleeval==1.0.3
 langchain-community
-langchain-unstructured[all-docs]
+langchain-unstructured
 lxml_html_clean==0.3.1
 markdown==3.7
 mcp==1.16.0
@@ -64,23 +61,18 @@ jinja2>=3.1.0
 transformers>=4.40.0
 outlines>=0.1.7
 
-# === TTS stack (Python 3.12-safe) ===
+# === NeuTTS-Air stack (Python 3.12 native) ===
 numpy>=1.26,<2.1
-transformers>=4.43,<5
-accelerate>=0.30
 soundfile>=0.12
-
-# Coqui TTS (XTTS + OpenVoice VC) — installed via source on Python 3.12
-# Keep PyPI install for Python < 3.12 only (see setup.sh for 3.12 path)
-TTS>=0.22.0,<0.23; python_version < "3.12"
-
-# Torch (CPU wheels OK; MPS included for Apple Silicon)
-torch==2.4.0
-torchaudio==2.4.0
-
-# improves prosody; requires espeak (brew install espeak)
 phonemizer>=3.3.0
-# kokoro>=0.9.4  # Removed - using streaming-only TTS engines now
+huggingface-hub>=0.23
+onnxruntime>=1.18
+llama-cpp-python>=0.2.90
+librosa>=0.10.0
+resemble-perth>=1.0.1
+
+# Torch only required for optional research paths; keep lightweight CPU build for compatibility
+torch==2.4.0
 
 # SearXNG runtime (import dependency)
 whitenoise==6.9.0

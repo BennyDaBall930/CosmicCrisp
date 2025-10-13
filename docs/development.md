@@ -16,13 +16,13 @@ cd apple-zero
 ## Step 2: Install dependencies
 Use the setup script to install Homebrew packages and Python requirements:
 ```bash
-./dev/macos/setup.sh
+./setup.sh
 ```
 This script creates a virtual environment in `venv/` and installs all dependencies.
 
 ## Step 3: Launch Apple Zero
 ```bash
-./dev/macos/run.sh
+./run.sh
 ```
 The web interface will be available at `http://localhost:8080`.
 

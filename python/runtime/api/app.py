@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import json
 import os
+import struct
+import tempfile
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any, AsyncIterator, Dict, Iterable, List
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .schemas import (
     BrowserContinueRequest,
@@ -19,10 +23,13 @@ from .schemas import (
     ResumeRequest,
     RunRequest,
     ToolInvokeRequest,
+    TTSSpeakRequest,
+    TTSVoiceCreateRequest,
+    TTSDefaultRequest,
 )
 from .sse import sse_iter
 from ..config import load_runtime_config
-from ..container import event_bus, get_orchestrator, memory, observability, tool_registry
+from ..container import event_bus, get_orchestrator, get_tts_provider, memory, observability, tool_registry
 
 TAGS_METADATA = [
     {"name": "Chat", "description": "Interactive chat endpoints with token streaming."},
@@ -30,6 +37,7 @@ TAGS_METADATA = [
     {"name": "Tools", "description": "Tool discovery and invocation."},
     {"name": "Events", "description": "Server-sent events and notifications."},
     {"name": "Admin", "description": "Administrative APIs."},
+    {"name": "TTS", "description": "NeuTTS-Air streaming speech synthesis."},
 ]
 
 app = FastAPI(title="Apple Zero Runtime API", version="0.1.0", openapi_tags=TAGS_METADATA)
@@ -43,6 +51,47 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _wav_header(sample_rate: int, num_frames: int | None) -> bytes:
+    """Generate a minimal PCM16 WAV header."""
+    num_channels = 1
+    bits_per_sample = 16
+    byte_rate = sample_rate * num_channels * bits_per_sample // 8
+    block_align = num_channels * bits_per_sample // 8
+    if num_frames is None:
+        data_size = 0xFFFFFFFF
+        riff_size = 0xFFFFFFFF
+    else:
+        data_size = num_frames * block_align
+        riff_size = data_size + 36
+    return struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        riff_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+
+
+def _wrap_wav(pcm: bytes, sample_rate: int) -> bytes:
+    frames = len(pcm) // 2
+    return _wav_header(sample_rate, frames) + pcm
+
+
+def _stream_wav(chunks: Iterable[bytes], sample_rate: int) -> Iterable[bytes]:
+    yield _wav_header(sample_rate, None)
+    for chunk in chunks:
+        yield chunk
 
 
 def require_admin_auth(request: Request) -> None:
@@ -173,6 +222,94 @@ async def tools_invoke_endpoint(payload: ToolInvokeRequest) -> Dict[str, Any]:
     obs.record_tool_usage(tool=payload.name)
     result = await tool.run(**payload.inputs)
     return {"result": result}
+
+
+@router.get("/tts/voices", tags=["TTS"])
+async def tts_list_voices() -> Dict[str, Any]:
+    provider = get_tts_provider()
+    return {"voices": provider.list_voices(), "watermarked": True}
+
+
+@router.post("/tts/voices", tags=["TTS"])
+async def tts_create_voice(payload: TTSVoiceCreateRequest) -> Dict[str, Any]:
+    provider = get_tts_provider()
+    try:
+        audio_bytes = base64.b64decode(payload.audio_base64)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid base64 audio: {exc}") from exc
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+        tmp_wav.write(audio_bytes)
+        tmp_wav.flush()
+        tmp_path = tmp_wav.name
+    try:
+        voice_id = provider.register_voice(payload.name, tmp_path, payload.ref_text)
+    except ValueError as exc:
+        # Validation issues (duration too short/long, non-mono, etc.)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        # Unexpected errors
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:  # pragma: no cover
+            pass
+    return {"voice_id": voice_id}
+
+
+@router.delete("/tts/voices/{voice_id}", tags=["TTS"])
+async def tts_delete_voice(voice_id: str) -> Dict[str, Any]:
+    provider = get_tts_provider()
+    provider.delete_voice(voice_id)
+    return {"ok": True}
+
+
+@router.post("/tts/voices/reset", tags=["TTS"])
+async def tts_reset_voices() -> Dict[str, Any]:
+    provider = get_tts_provider()
+    provider.reset_voices()
+    return {"ok": True}
+
+@router.post("/tts/default", tags=["TTS"])
+async def tts_set_default(payload: TTSDefaultRequest) -> Dict[str, Any]:
+    provider = get_tts_provider()
+    provider.set_default_voice(payload.voice_id)
+    return {"default_voice_id": payload.voice_id}
+
+
+@router.post("/tts/speak", tags=["TTS"])
+async def tts_speak(payload: TTSSpeakRequest) -> Response:
+    provider = get_tts_provider()
+    cfg = _config.tts
+    try:
+        result = provider.synthesize(payload.text, payload.voice_id, stream=payload.stream)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:  # provide more context to client for diagnostics
+        detail = {
+            "error": "synthesis_failed",
+            "message": str(exc),
+            "voice_id": payload.voice_id,
+        }
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail) from exc
+
+    meta = provider.last_output_metadata
+    headers = {
+        "X-NeuTTS-Voice-Id": str(meta.get("voice_id", "")),
+        "X-NeuTTS-Watermarked": "true" if meta.get("watermarked") else "false",
+        "X-NeuTTS-Quality": str(meta.get("quality", "")),
+        "X-NeuTTS-Duration": str(meta.get("duration", "")),
+        "X-NeuTTS-Sample-Rate": str(cfg.sample_rate),
+    }
+    if payload.stream and isinstance(result, Iterable) and not isinstance(result, (bytes, bytearray)):
+        stream_iterable = _stream_wav(result, cfg.sample_rate)
+        return StreamingResponse(stream_iterable, media_type="audio/wav", headers=headers)
+    if isinstance(result, bytes):
+        audio = _wrap_wav(result, cfg.sample_rate)
+        return Response(content=audio, media_type="audio/wav", headers=headers)
+    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid synthesis result")
 
 
 @router.get("/admin/memory", tags=["Admin"], dependencies=[Depends(require_admin_auth)])

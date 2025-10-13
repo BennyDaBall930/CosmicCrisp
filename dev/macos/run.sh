@@ -47,13 +47,6 @@ fi
 # Include playwright so browser tools load reliably. Avoid bare importing browser_use
 # here since it may attempt to touch ~/.config during import; we do a safe check.
 REQUIRED_MODULES=("flask" "litellm" "mcp" "playwright" "aiohttp")
-if [ "$(python3 - <<'PY'
-import sys
-print(int(sys.version_info[:2] < (3, 12)))
-PY
-)" -eq 1 ]; then
-    REQUIRED_MODULES+=("chatterbox")
-fi
 for module in "${REQUIRED_MODULES[@]}"; do
     if ! python3 -c "import $module" 2>/dev/null; then
         echo -e "${YELLOW}Warning: $module not found, installing requirements...${NC}"
@@ -89,11 +82,19 @@ if [ -d "${FFMPEG6_PREFIX}/lib" ]; then
     export PKG_CONFIG_PATH="${FFMPEG6_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
 fi
 # Prefer fast Metal kernels on Apple Silicon and avoid silent CPU fallbacks.
-export PYTORCH_MPS_FAST_MATH=1
-export PYTORCH_MPS_PREFER_METAL=1
-export PYTORCH_ENABLE_MPS_FALLBACK=0
-export PYTORCH_MPS_HIGH_WATERMARK_RATIO=1.0
-export PYTORCH_MPS_LOW_WATERMARK_RATIO=0.9
+# Set NEUTTS_FORCE_CPU=1 to disable MPS for TTS components during diagnosis.
+export PYTORCH_MPS_FAST_MATH=${PYTORCH_MPS_FAST_MATH:-1}
+export PYTORCH_MPS_PREFER_METAL=${PYTORCH_MPS_PREFER_METAL:-1}
+export PYTORCH_ENABLE_MPS_FALLBACK=${PYTORCH_ENABLE_MPS_FALLBACK:-0}
+export PYTORCH_MPS_HIGH_WATERMARK_RATIO=${PYTORCH_MPS_HIGH_WATERMARK_RATIO:-1.0}
+export PYTORCH_MPS_LOW_WATERMARK_RATIO=${PYTORCH_MPS_LOW_WATERMARK_RATIO:-0.9}
+
+# Optional CPU override for NeuTTS to falsify GPU issues
+if [[ "${NEUTTS_FORCE_CPU:-0}" == "1" ]]; then
+  export NEUTTS_BACKBONE_DEVICE=cpu
+  export NEUTTS_CODEC_DEVICE=cpu
+  echo -e "${YELLOW}NEUTTS_FORCE_CPU=1: Using CPU for TTS backbone/codec${NC}"
+fi
 # Keep Playwright assets under project tmp to avoid touching user Chrome
 export PLAYWRIGHT_BROWSERS_PATH="${PROJECT_DIR}/tmp/playwright"
 # Keep browser-use configs isolated to project tmp
@@ -103,11 +104,19 @@ export WEB_UI_HOST="127.0.0.1"
 
 # If espeak-ng is installed via Homebrew, hint phonemizer where to find it for Kokoro/misaki
 ESPEAK_PREFIX="/opt/homebrew"
-if [ -f "${ESPEAK_PREFIX}/lib/libespeak-ng.dylib" ]; then
-  export PHONEMIZER_ESPEAK_LIBRARY="${ESPEAK_PREFIX}/lib/libespeak-ng.dylib"
+if [ -z "${PHONEMIZER_ESPEAK_LIBRARY:-}" ]; then
+  if [ -f "${ESPEAK_PREFIX}/lib/libespeak-ng.dylib" ]; then
+    export PHONEMIZER_ESPEAK_LIBRARY="${ESPEAK_PREFIX}/lib/libespeak-ng.dylib"
+  elif [ -f "${ESPEAK_PREFIX}/lib/libespeak.dylib" ]; then
+    export PHONEMIZER_ESPEAK_LIBRARY="${ESPEAK_PREFIX}/lib/libespeak.dylib"
+  fi
 fi
-if [ -d "${ESPEAK_PREFIX}/share/espeak-ng-data" ]; then
-  export ESPEAKNG_DATA_PATH="${ESPEAK_PREFIX}/share/espeak-ng-data"
+if [ -z "${ESPEAKNG_DATA_PATH:-}" ]; then
+  if [ -d "${ESPEAK_PREFIX}/share/espeak-ng-data" ]; then
+    export ESPEAKNG_DATA_PATH="${ESPEAK_PREFIX}/share/espeak-ng-data"
+  elif [ -d "${ESPEAK_PREFIX}/share/espeak-data" ]; then
+    export ESPEAKNG_DATA_PATH="${ESPEAK_PREFIX}/share/espeak-data"
+  fi
 fi
 
 # Ensure SearXNG has a non-default secret to avoid startup exit
@@ -132,6 +141,35 @@ mkdir -p tmp
 
 echo -e "${GREEN}Starting Apple Zero UI Orchestrator...${NC}"
 echo ""
+
+# Print a short environment + dependency audit to simplify debugging
+echo -e "${YELLOW}Environment audit (NeuTTS):${NC}"
+python3 - <<'PY'
+import os, sys
+def g(k, d=""):
+    print(f"{k}={os.getenv(k, d)}")
+for k in [
+    'NEUTTS_BACKBONE_REPO','NEUTTS_CODEC_REPO','NEUTTS_BACKBONE_DEVICE','NEUTTS_CODEC_DEVICE',
+    'NEUTTS_MODEL_CACHE_DIR','NEUTTS_STREAM_CHUNK_SEC','NEUTTS_DEFAULT_VOICE_ID',
+    'TTS_PROVIDER','TTS_SAMPLE_RATE','TTS_STREAM_DEFAULT'
+]:
+    g(k)
+try:
+    import torch
+    print('torch', torch.__version__, 'mps:', torch.backends.mps.is_available())
+except Exception as e:
+    print('torch not available:', e)
+try:
+    import llama_cpp
+    print('llama_cpp', getattr(llama_cpp,'__version__','?'))
+except Exception as e:
+    print('llama_cpp not available:', e)
+try:
+    import onnxruntime as ort
+    print('onnxruntime', ort.__version__, 'providers:', ort.get_available_providers())
+except Exception as e:
+    print('onnxruntime not available:', e)
+PY
 
 SEARXNG_PID_FILE="${PROJECT_DIR}/tmp/searxng.pid"
 SEARXNG_TERM_ID_FILE="${PROJECT_DIR}/tmp/searxng.terminal.id"

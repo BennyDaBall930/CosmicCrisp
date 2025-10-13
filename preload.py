@@ -1,11 +1,16 @@
 import asyncio
-import subprocess
-import os
+import json
 import logging
-from python.helpers import runtime, whisper, settings
-from python.helpers.xtts_tts import config_from_dict as xtts_config_from_dict, get_backend as get_xtts_backend
+import shutil
+import textwrap
+import time
+import urllib.request
+
+from python.helpers import runtime, settings, whisper
 from python.helpers.print_style import PrintStyle
+
 import models
+from python.runtime.audio.neutts_provider import VoiceMetadata
 
 
 async def preload():
@@ -25,38 +30,117 @@ async def preload():
             except Exception as e:
                 PrintStyle().error(f"Error in preload_embedding: {e}")
 
-        async def preload_xtts():
+        async def preload_neutts():
             try:
-                tts_settings = current.get("tts", {}) if isinstance(current, dict) else {}
-                if not isinstance(tts_settings, dict):
-                    return
-                if tts_settings.get("engine") != "xtts":
-                    return
-                cfg_map = tts_settings.get("xtts")
-                cfg = xtts_config_from_dict(cfg_map if isinstance(cfg_map, dict) else {})
-                await asyncio.to_thread(get_xtts_backend, cfg)
-                PrintStyle(level=logging.DEBUG).print("XTTS backend warmed up")
-            except Exception as e:
-                PrintStyle().error(f"Error in preload_xtts: {e}")
+                from python.runtime.container import get_tts_provider
 
-        async def preload_kokoro():
-            try:
-                tts_settings = current.get("tts", {}) if isinstance(current, dict) else {}
-                if not isinstance(tts_settings, dict):
-                    return
-                if tts_settings.get("engine") != "kokoro":
-                    return
-                from python.helpers import kokoro_tts
-                await kokoro_tts.preload()
-                PrintStyle(level=logging.DEBUG).print("Kokoro backend warmed up")
+                provider = get_tts_provider()
+
+                current_codec = (current.get("tts", {}).get("neutts", {}) or {}).get("codec_repo")
+                if current_codec == "neuphonic/neucodec":
+                    try:
+                        settings.set_settings_delta(
+                            {"tts": {"neutts": {"codec_repo": "neuphonic/neucodec-onnx-decoder"}}},
+                            apply=True,
+                        )
+                        provider.codec_repo = "neuphonic/neucodec-onnx-decoder"
+                        log = PrintStyle()
+                        log.print("Migrated NeuTTS codec_repo to neuphonic/neucodec-onnx-decoder for streaming support.")
+                    except Exception as exc:  # pragma: no cover
+                        PrintStyle().error(f"Failed to migrate NeuTTS codec_repo: {exc}")
+                # Clean out orphaned voice directories (leftover partial registrations)
+                for candidate in provider.voices_dir.glob("*"):
+                    if candidate.is_dir() and not (candidate / "meta.json").exists():
+                        shutil.rmtree(candidate, ignore_errors=True)
+
+                existing = provider.list_voices()
+
+                # Seed reference voices from the NeuTTS-Air samples repo if none exist.
+                # https://github.com/neuphonic/neutts-air/tree/main/samples
+                if not existing:
+                    PrintStyle().print("Seeding NeuTTS sample voices (Jo, Dave)...")
+                    base_url = "https://raw.githubusercontent.com/neuphonic/neutts-air/main/samples"
+                    samples = (
+                        {
+                            "id": "jo",
+                            "name": "Jo",
+                            "codes": f"{base_url}/jo.pt",
+                            "txt": f"{base_url}/jo.txt",
+                        },
+                        {
+                            "id": "dave",
+                            "name": "Dave",
+                            "codes": f"{base_url}/dave.pt",
+                            "txt": f"{base_url}/dave.txt",
+                        },
+                    )
+
+                    created_ids: list[str] = []
+                    for sample in samples:
+                        voice_id = sample["id"]
+                        voice_dir = provider.voices_dir / voice_id
+                        try:
+                            if voice_dir.exists():
+                                shutil.rmtree(voice_dir, ignore_errors=True)
+                            voice_dir.mkdir(parents=True, exist_ok=True)
+
+                            codes_path = voice_dir / "ref.codes.pt"
+                            text_path = voice_dir / "ref.txt"
+                            meta_path = voice_dir / "meta.json"
+
+                            # Download pre-encoded codes
+                            with urllib.request.urlopen(sample["codes"], timeout=30) as response:
+                                codes_path.write_bytes(response.read())
+
+                            # Download reference transcript
+                            with urllib.request.urlopen(sample["txt"], timeout=30) as response:
+                                ref_text_raw = response.read().decode("utf-8", errors="ignore")
+                            ref_text = textwrap.shorten(ref_text_raw.strip(), width=4000, placeholder=" …")
+                            text_path.write_text(ref_text, encoding="utf-8")
+
+                            # Write metadata and update in-memory cache
+                            meta = VoiceMetadata(
+                                id=voice_id,
+                                name=sample["name"],
+                                created_at=time.time(),
+                                ref_text=ref_text,
+                                sample_rate=provider.sample_rate,
+                                quality=provider.quality_default,
+                            )
+                            meta_path.write_text(json.dumps(meta.to_json(), indent=2), encoding="utf-8")
+                            with provider._metadata_lock:
+                                provider._voices[voice_id] = meta
+
+                            created_ids.append(voice_id)
+                        except Exception as exc:
+                            PrintStyle().error(f"Failed to seed voice {sample['name']}: {exc}")
+                            shutil.rmtree(voice_dir, ignore_errors=True)
+
+                    if created_ids:
+                        default_id = created_ids[0]
+                        provider.set_default_voice(default_id)
+                        try:
+                            settings.set_settings_delta(
+                                {
+                                    "tts": {
+                                        "neutts": {
+                                            "default_voice_id": default_id,
+                                        }
+                                    }
+                                },
+                                apply=True,
+                            )
+                        except Exception as exc:
+                            PrintStyle().error(f"Failed to persist NeuTTS default voice: {exc}")
+
+                PrintStyle(level=logging.DEBUG).print("NeuTTS provider warmed up")
             except Exception as e:
-                PrintStyle().error(f"Error in preload_kokoro: {e}")
+                PrintStyle().error(f"Error in preload_neutts: {e}")
 
         # async tasks to preload
         tasks = [
             preload_embedding(),
-            preload_xtts(),
-            preload_kokoro(),
+            preload_neutts(),
         ]
 
         await asyncio.gather(*tasks, return_exceptions=True)

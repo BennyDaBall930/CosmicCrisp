@@ -87,13 +87,16 @@ fi
 echo -e "\n${GREEN}Step 4: Installing Python dependencies...${NC}"
 export PIP_NO_BUILD_ISOLATION=1
 pip install --upgrade pip
-pip install "numpy<2" wheel
+pip install "numpy>=1.26,<2.1" wheel
 echo "Installing root requirements..."
 pip install -r requirements.txt
 
-echo "Skipping Coqui source build on Python 3.12; using sidecar service instead."
-echo "Preparing TTS sidecar environment (Python 3.11)..."
-./setup.sh
+echo "Installing NeuTTS system dependencies (espeak for phonemizer)..."
+if command -v brew >/dev/null 2>&1; then
+    brew install espeak || true
+else
+    echo "Homebrew not found. Install 'espeak' manually to enable phonemizer support." >&2
+fi
 
 # Install SearXNG dependencies up front to avoid runtime installs
 if [ -f "searxng/requirements.txt" ]; then
@@ -109,9 +112,28 @@ playwright install chromium
 # Optionally also prefetch the lightweight headless shell
 playwright install chromium --only-shell || true
 
+# --- Step 6: NeuTTS Voice Encoding (Optional) ---
+echo -e "\n${GREEN}Step 6: NeuTTS voice encoding setup (optional)...${NC}"
+echo -e "${YELLOW}Note: Voice encoding has complex dependencies and may be skipped.${NC}"
+echo "Voices can be pre-encoded externally or synthesis can use default configurations."
+echo ""
+echo "For voice cloning setup instructions, see: docs/NEUTTS_QUICKSTART.md"
+echo ""
+echo "NeuTTS will work for synthesis without voice cloning, or you can:"
+echo "  1. Pre-encode voices in a Docker container with compatible dependencies"
+echo "  2. Use the Neuphonic API for voice cloning"
+echo "  3. Wait for neucodec package updates resolving dependency conflicts"
+echo ""
+echo -e "${GREEN}✓${NC} Skipping voice encoding environment (optional feature)"
+
 echo -e "\n${GREEN}Setup complete!${NC}"
 echo "You can now run the application with:"
-echo -e "${YELLOW}./dev/macos/run.sh${NC}"
+echo -e "${YELLOW}./run.sh${NC}"
+echo ""
+echo "For NeuTTS voice cloning:"
+echo "  • Default voices (Dave, Jo) should be ready if you encoded them"
+echo "  • Add custom voices: source venv_encode/bin/activate && python scripts/encode_neutts_reference.py"
+echo "  • Quick start guide: docs/NEUTTS_QUICKSTART.md"
 
 # Deactivate virtual environment
 deactivate

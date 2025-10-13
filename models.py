@@ -17,6 +17,7 @@ from typing import (
     Tuple,
     TypedDict,
 )
+from itertools import count
 
 from litellm import completion, acompletion, embedding
 import litellm
@@ -32,6 +33,146 @@ from python.models.apple_mlx_provider import MLXServerClient
 from pydantic import ConfigDict
 
 logger = logging.getLogger("a0.mlx_cache")
+reasoning_logger = logging.getLogger("a0.reasoning")
+
+_REASONING_FIELD_NAMES = (
+    "reasoning_content",
+    "reasoning",
+    "x_gpt_thinking",
+    "thinking",
+    "thoughts",
+    "internal_thoughts",
+)
+
+_DEBUG_REASONING = os.getenv("A0_DEBUG_REASONING", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+_REASONING_CHUNK_COUNTER = count(1)
+
+if _DEBUG_REASONING and reasoning_logger.level == logging.NOTSET:
+    reasoning_logger.setLevel(logging.INFO)
+
+
+def _normalize_obj(value: Any) -> Any:
+    """Best-effort convert provider specific objects into plain Python types."""
+
+    if isinstance(value, dict):
+        return {k: _normalize_obj(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_obj(v) for v in value]
+
+    # LiteLLM / OpenAI objects often provide to_dict/model_dump helpers.
+    for attr in ("to_dict", "model_dump", "dict"):
+        helper = getattr(value, attr, None)
+        if callable(helper):
+            try:
+                return _normalize_obj(helper())
+            except Exception:
+                continue
+    return value
+
+
+def _stringify_content(value: Any) -> str:
+    """Convert mixed content structures (lists, dicts) into plain text."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return "".join(_stringify_content(v) for v in value)
+    if isinstance(value, dict):
+        # Prefer explicit text/content style keys before falling back to values
+        for key in ("text", "content", "value", "message"):
+            if key in value:
+                text = _stringify_content(value[key])
+                if text:
+                    return text
+        if "parts" in value:
+            return _stringify_content(value["parts"])
+        if "data" in value:
+            return _stringify_content(value["data"])
+        # Fallback: concatenate any scalar string-like values
+        return "".join(
+            _stringify_content(v)
+            for v in value.values()
+        )
+    return str(value)
+
+
+def _collect_reasoning_fields(
+    container: Any,
+    detected_keys: set[str],
+    parts: list[str],
+) -> None:
+    if container is None:
+        return
+    if isinstance(container, dict):
+        for key, value in container.items():
+            if key in _REASONING_FIELD_NAMES:
+                text = _stringify_content(value)
+                if text:
+                    parts.append(text)
+                    detected_keys.add(key)
+            elif isinstance(value, (dict, list, tuple)):
+                _collect_reasoning_fields(value, detected_keys, parts)
+    elif isinstance(container, (list, tuple)):
+        for item in container:
+            _collect_reasoning_fields(item, detected_keys, parts)
+
+
+def _extract_reasoning_text(*containers: Any) -> tuple[str, set[str]]:
+    detected: set[str] = set()
+    fragments: list[str] = []
+    for container in containers:
+        _collect_reasoning_fields(container, detected, fragments)
+    return "".join(fragments), detected
+
+
+def _debug_reasoning_keys(chunk_index: int, keys: set[str]) -> None:
+    if not _DEBUG_REASONING:
+        return
+
+    if keys:
+        reasoning_logger.info(
+            "[reasoning] chunk %s keys=%s",
+            chunk_index,
+            sorted(keys),
+        )
+    else:
+        reasoning_logger.info("[reasoning] chunk %s keys=(none)", chunk_index)
+
+
+def _extract_response_text(*sources: Any) -> str:
+    for source in sources:
+        if source is None:
+            continue
+
+        candidate = None
+        if isinstance(source, dict):
+            candidate = source.get("content")
+            if not candidate:
+                for alt in ("text", "message"):
+                    if alt in source:
+                        candidate = source[alt]
+                        break
+        else:
+            candidate = getattr(source, "content", None)
+            if not candidate:
+                candidate = getattr(source, "text", None)
+
+        if candidate:
+            text = _stringify_content(_normalize_obj(candidate))
+            if text:
+                return text
+
+    return ""
 
 from langchain_core.language_models.chat_models import SimpleChatModel
 from langchain_core.outputs.chat_generation import ChatGenerationChunk
@@ -193,13 +334,15 @@ class ChatGenerationResult:
             self.add_chunk(chunk)
 
     def add_chunk(self, chunk: ChatChunk) -> ChatChunk:
-        if chunk["reasoning_delta"]:
+        incoming_reasoning = chunk.get("reasoning_delta", "")
+        if incoming_reasoning:
             self.native_reasoning = True
 
         if self.native_reasoning:
+            reasoning_delta = self._diff_native_reasoning(incoming_reasoning)
             processed = ChatChunk(
                 response_delta=chunk["response_delta"],
-                reasoning_delta=chunk["reasoning_delta"],
+                reasoning_delta=reasoning_delta,
             )
         else:
             processed = self._process_thinking_chunk(chunk)
@@ -217,6 +360,19 @@ class ChatGenerationResult:
             else:
                 response += self.unprocessed
         return ChatChunk(response_delta=response, reasoning_delta=reasoning)
+
+    def _diff_native_reasoning(self, incoming: str) -> str:
+        if not incoming:
+            return ""
+
+        if not self.reasoning:
+            return incoming
+
+        if incoming.startswith(self.reasoning):
+            return incoming[len(self.reasoning) :]
+
+        # Fall back to treating the payload as a delta
+        return incoming
 
     def _process_thinking_chunk(self, chunk: ChatChunk) -> ChatChunk:
         response_delta = self.unprocessed + chunk["response_delta"]
@@ -711,25 +867,33 @@ def _get_litellm_embedding(model_name: str, provider_name: str, model_config: Op
 
 
 def _parse_chunk(chunk: Any) -> ChatChunk:
-    delta = chunk["choices"][0].get("delta", {})
-    message = chunk["choices"][0].get("message", {}) or chunk["choices"][0].get(
-        "model_extra", {}
-    ).get("message", {})
-    response_delta = (
-        delta.get("content", "")
-        if isinstance(delta, dict)
-        else getattr(delta, "content", "")
-    ) or (
-        message.get("content", "")
-        if isinstance(message, dict)
-        else getattr(message, "content", "")
+    choices = chunk.get("choices") or [{}]
+    choice = choices[0] if choices else {}
+
+    raw_delta = choice.get("delta", {})
+    raw_message = choice.get("message")
+    if not raw_message:
+        raw_message = (choice.get("model_extra", {}) or {}).get("message", {})
+
+    delta = _normalize_obj(raw_delta)
+    message = _normalize_obj(raw_message)
+    model_extra = _normalize_obj(choice.get("model_extra", {}))
+
+    response_delta = _extract_response_text(delta, message, choice)
+    if not response_delta:
+        # fallback to raw data if normalization removed structured content
+        response_delta = _extract_response_text(raw_delta, raw_message, choice)
+
+    reasoning_delta, detected_keys = _extract_reasoning_text(delta, message, model_extra)
+
+    if _DEBUG_REASONING:
+        chunk_index = next(_REASONING_CHUNK_COUNTER)
+        _debug_reasoning_keys(chunk_index, detected_keys)
+
+    return ChatChunk(
+        reasoning_delta=reasoning_delta or "",
+        response_delta=response_delta or "",
     )
-    reasoning_delta = (
-        delta.get("reasoning_content", "")
-        if isinstance(delta, dict)
-        else getattr(delta, "reasoning_content", "")
-    )
-    return ChatChunk(reasoning_delta=reasoning_delta, response_delta=response_delta)
 
 
 def _adjust_call_args(provider_name: str, model_name: str, kwargs: dict):

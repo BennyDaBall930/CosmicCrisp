@@ -13,50 +13,22 @@ from python.helpers.print_style import PrintStyle
 from python.helpers.providers import get_providers
 
 
-class ChatterboxSettings(TypedDict, total=False):
-    device: Optional[str]
-    multilingual: bool
-    sample_rate: int
-    exaggeration: float
-    cfg: float
-    audio_prompt_path: Optional[str]
-    language_id: Optional[str]
-    max_chars: int
-    join_silence_ms: int
-
-
-class XTTSSettings(TypedDict, total=False):
-    model_id: str
-    device: Optional[str]
-    speaker: Optional[str]
-    language: Optional[str]
-    speaker_wav_path: Optional[str]
-    sample_rate: int
-    max_chars: int
-    join_silence_ms: int
-
-
-class PiperVCSettings(TypedDict, total=False):
-    piper_bin: str
-    piper_model: str
-    sample_rate: int
-    max_chars: int
-    join_silence_ms: int
-    target_voice_wav: Optional[str]
-
-
-class KokoroSettings(TypedDict, total=False):
-    voice: str
-    speed: float
-    sample_rate: int
+class NeuTTSSettings(TypedDict, total=False):
+    backbone_repo: str
+    codec_repo: str
+    backbone_device: str
+    codec_device: str
+    model_cache_dir: str
+    quality_default: Literal["q4", "q8"]
+    default_voice_id: Optional[str]
+    stream_chunk_seconds: float
 
 
 class TTSSettings(TypedDict):
-    engine: Literal["chatterbox", "xtts", "piper_vc", "kokoro", "browser"]
-    chatterbox: ChatterboxSettings
-    xtts: XTTSSettings
-    piper_vc: PiperVCSettings
-    kokoro: KokoroSettings
+    provider: Literal["neutts"]
+    sample_rate: int
+    stream_default: bool
+    neutts: NeuTTSSettings
 
 
 class Settings(TypedDict):
@@ -1051,267 +1023,60 @@ def convert_out(settings: Settings) -> SettingsOutput:
         }
     )
 
-    # TTS fields
+    # TTS fields (NeuTTS-Air only)
     tts_settings = settings["tts"]
-    chatterbox_settings = tts_settings["chatterbox"]
-    xtts_settings = tts_settings["xtts"]
-    kokoro_settings = tts_settings.get("kokoro", {})
-    if not isinstance(kokoro_settings, dict):
-        kokoro_settings = {}
-    piper_vc_settings = tts_settings.get("piper_vc", {})
-    if not isinstance(piper_vc_settings, dict):
-        piper_vc_settings = {}
-    current_engine = str(tts_settings.get("engine", "chatterbox"))
-    show_chatterbox = current_engine == "chatterbox"
-    show_xtts = current_engine == "xtts"
-    show_kokoro = current_engine == "kokoro"
-    show_piper_vc = current_engine == "piper_vc"
+    neutts_settings = tts_settings.get("neutts", {}) if isinstance(tts_settings, dict) else {}
+    provider_label = "NeuTTS-Air (Metal accelerated)"
 
     tts_fields: list[SettingsField] = [
         {
-            "id": "tts_engine",
-            "title": "TTS engine",
-            "description": "Select the Text-to-Speech engine.",
-            "type": "select",
-            "value": current_engine,
-            "options": [
-                {"value": "chatterbox", "label": "Chatterbox"},
-                {"value": "xtts", "label": "Coqui XTTS"},
-                {"value": "kokoro", "label": "Kokoro"},
-                {"value": "piper_vc", "label": "Piper + OpenVoice (VC)"},
-                {"value": "browser", "label": "Browser"},
-            ],
+            "id": "tts_provider_readonly",
+            "title": "Speech synthesis provider",
+            "description": "NeuTTS-Air runs locally with perceptual watermarking enabled.",
+            "type": "html",
+            "value": f"<strong>{provider_label}</strong> is always active. Manage custom voices from the Voice Lab panel.",
         },
         {
-            "id": "tts_chatterbox_device",
-            "title": "Chatterbox device",
-            "description": "Preferred device for generation (auto selects the best available).",
-            "type": "select",
-            "value": chatterbox_settings.get("device") or "auto",
-            "options": [
-                {"value": "auto", "label": "Auto"},
-                {"value": "mps", "label": "Apple GPU (MPS)"},
-                {"value": "cuda", "label": "CUDA"},
-                {"value": "cpu", "label": "CPU"},
-            ],
-            "hidden": not show_chatterbox,
-        },
-        {
-            "id": "tts_chatterbox_multilingual",
-            "title": "Chatterbox multilingual mode",
-            "description": "Enable the multilingual checkpoint (23 supported languages).",
+            "id": "tts_stream_default",
+            "title": "Streaming synthesis",
+            "description": "Stream audio in ~300 ms chunks for sub-500 ms time-to-first-audio (recommended).",
             "type": "switch",
-            "value": chatterbox_settings.get("multilingual", False),
-            "hidden": not show_chatterbox,
+            "value": bool(tts_settings.get("stream_default", True)),
         },
         {
-            "id": "tts_chatterbox_language_id",
-            "title": "Language ID",
-            "description": "Language code used when multilingual mode is enabled (e.g. en, fr, zh).",
-            "type": "text",
-            "value": chatterbox_settings.get("language_id", "en"),
-            "hidden": not show_chatterbox,
-        },
-        {
-            "id": "tts_chatterbox_exaggeration",
-            "title": "Emotion (exaggeration)",
-            "description": "Adjust vocal intensity. Higher values add more emotion (default 0.5).",
-            "type": "range",
-            "min": 0,
-            "max": 1,
-            "step": 0.05,
-            "value": chatterbox_settings.get("exaggeration", 0.5),
-            "hidden": not show_chatterbox,
-        },
-        {
-            "id": "tts_chatterbox_cfg",
-            "title": "CFG (style/pacing)",
-            "description": "Lower values slow pacing; higher increases adherence (default 0.5).",
-            "type": "range",
-            "min": 0,
-            "max": 1,
-            "step": 0.05,
-            "value": chatterbox_settings.get("cfg", 0.5),
-            "hidden": not show_chatterbox,
-        },
-        {
-            "id": "tts_chatterbox_audio_prompt_path",
-            "title": "Reference voice path",
-            "description": "Optional 7-20s reference clip for zero-shot voice cloning.",
-            "type": "text",
-            "value": chatterbox_settings.get("audio_prompt_path") or "",
-            "hidden": not show_chatterbox,
-        },
-        {
-            "id": "tts_chatterbox_max_chars",
-            "title": "Chunk size (characters)",
-            "description": "Maximum characters per generation chunk.",
-            "type": "number",
-            "value": chatterbox_settings.get("max_chars", 600),
-            "hidden": not show_chatterbox,
-        },
-        {
-            "id": "tts_chatterbox_join_silence_ms",
-            "title": "Join gap (ms)",
-            "description": "Silence inserted between concatenated chunks.",
-            "type": "number",
-            "value": chatterbox_settings.get("join_silence_ms", 120),
-            "hidden": not show_chatterbox,
-        },
-        {
-            "id": "tts_xtts_model_id",
-            "title": "XTTS model",
-            "description": "Coqui model identifier or local checkpoint path.",
-            "type": "text",
-            "value": xtts_settings.get("model_id", "tts_models/multilingual/multi-dataset/xtts_v2"),
-            "hidden": not show_xtts,
-        },
-        {
-            "id": "tts_xtts_device",
-            "title": "XTTS device",
-            "description": "Preferred device (auto chooses the best available).",
+            "id": "tts_quality_default",
+            "title": "Default quality",
+            "description": "Q4 for maximum responsiveness, Q8 for higher fidelity (requires more VRAM).",
             "type": "select",
-            "value": xtts_settings.get("device") or "auto",
+            "value": neutts_settings.get("quality_default", "q4"),
             "options": [
-                {"value": "auto", "label": "Auto"},
-                {"value": "cuda", "label": "CUDA"},
-                {"value": "mps", "label": "Apple GPU (MPS)"},
-                {"value": "cpu", "label": "CPU"},
+                {"value": "q4", "label": "Q4 (fast)"},
+                {"value": "q8", "label": "Q8 (high fidelity)"},
             ],
-            "hidden": not show_xtts,
         },
         {
-            "id": "tts_xtts_language",
-            "title": "Language",
-            "description": "ISO language code used during synthesis (e.g. en, es, fr).",
+            "id": "tts_sample_rate",
+            "title": "Sample rate (Hz)",
+            "description": "NeuTTS-Air produces 24 kHz audio by default.",
+            "type": "number",
+            "value": tts_settings.get("sample_rate", 24_000),
+        },
+        {
+            "id": "tts_active_voice_id",
+            "title": "Default voice",
+            "description": "Internal field storing the default NeuTTS voice id.",
             "type": "text",
-            "value": xtts_settings.get("language", "en"),
-            "hidden": not show_xtts,
+            "value": neutts_settings.get("default_voice_id"),
+            "hidden": True,
         },
         {
-            "id": "tts_xtts_speaker",
-            "title": "Speaker preset",
-            "description": "Optional built-in speaker ID (e.g. female-en-5). Leave empty for default voice.",
-            "type": "text",
-            "value": xtts_settings.get("speaker") or "",
-            "hidden": not show_xtts,
-        },
-        {
-            "id": "tts_xtts_speaker_wav_path",
-            "title": "Reference voice path",
-            "description": "Optional reference audio (5–10s) to clone a custom voice.",
-            "type": "text",
-            "value": xtts_settings.get("speaker_wav_path") or "",
-            "hidden": not show_xtts,
-        },
-        {
-            "id": "tts_xtts_sample_rate",
-            "title": "Output sample rate",
-            "description": "Sample rate for generated audio (default 24000).",
-            "type": "number",
-            "value": xtts_settings.get("sample_rate", 24000),
-            "hidden": not show_xtts,
-        },
-        {
-            "id": "tts_xtts_max_chars",
-            "title": "Chunk size (characters)",
-            "description": "Maximum characters per synthesis request.",
-            "type": "number",
-            "value": xtts_settings.get("max_chars", 400),
-            "hidden": not show_xtts,
-        },
-        {
-            "id": "tts_xtts_join_silence_ms",
-            "title": "Join gap (ms)",
-            "description": "Silence inserted between concatenated chunks when streaming.",
-            "type": "number",
-            "value": xtts_settings.get("join_silence_ms", 80),
-            "hidden": not show_xtts,
-        },
-        {
-            "id": "tts_piper_vc_piper_bin",
-            "title": "Piper binary",
-            "description": "Path or name of Piper executable (in PATH).",
-            "type": "text",
-            "value": piper_vc_settings.get("piper_bin", "piper"),
-            "hidden": not show_piper_vc,
-        },
-        {
-            "id": "tts_piper_vc_piper_model",
-            "title": "Piper model (.onnx)",
-            "description": "Absolute path to Piper ONNX voice model.",
-            "type": "text",
-            "value": piper_vc_settings.get("piper_model", ""),
-            "hidden": not show_piper_vc,
-        },
-        {
-            "id": "tts_piper_vc_sample_rate",
-            "title": "Output sample rate",
-            "description": "Sample rate for generated audio (matches Piper voice).",
-            "type": "number",
-            "value": piper_vc_settings.get("sample_rate", 22050),
-            "hidden": not show_piper_vc,
-        },
-        {
-            "id": "tts_piper_vc_max_chars",
-            "title": "Chunk size (characters)",
-            "description": "Maximum characters per synthesis chunk.",
-            "type": "number",
-            "value": piper_vc_settings.get("max_chars", 280),
-            "hidden": not show_piper_vc,
-        },
-        {
-            "id": "tts_piper_vc_join_silence_ms",
-            "title": "Join gap (ms)",
-            "description": "Silence inserted between concatenated chunks.",
-            "type": "number",
-            "value": piper_vc_settings.get("join_silence_ms", 80),
-            "hidden": not show_piper_vc,
-        },
-        {
-            "id": "tts_piper_vc_target_voice_wav",
-            "title": "Reference voice path",
-            "description": "Default 5–10s reference clip for voice cloning.",
-            "type": "text",
-            "value": piper_vc_settings.get("target_voice_wav", ""),
-            "hidden": not show_piper_vc,
-        },
-        {
-            "id": "tts_kokoro_voice",
-            "title": "Kokoro voice preset",
-            "description": "Comma-separated Kokoro voice identifiers (e.g. am_puck,am_onyx).",
-            "type": "text",
-            "value": kokoro_settings.get("voice", "am_puck,am_onyx"),
-            "hidden": not show_kokoro,
-        },
-        {
-            "id": "tts_kokoro_speed",
-            "title": "Playback speed",
-            "description": "Adjust Kokoro speaking rate (default 1.1).",
-            "type": "number",
-            "value": kokoro_settings.get("speed", 1.1),
-            "hidden": not show_kokoro,
-        },
-        {
-            "id": "tts_kokoro_sample_rate",
-            "title": "Output sample rate",
-            "description": "Sample rate for generated audio (default 24000).",
-            "type": "number",
-            "value": kokoro_settings.get("sample_rate", 24000),
-            "hidden": not show_kokoro,
+            "id": "tts_voice_lab_component",
+            "title": "Voice Lab",
+            "description": "Create, clone, and manage NeuTTS voices.",
+            "type": "html",
+            "value": "<x-component path='/settings/speech/voice-lab.html' />",
         },
     ]
-
-    if current_engine == "browser":
-        tts_fields.append(
-            {
-                "id": "tts_browser_info",
-                "title": "Browser speech synthesis",
-                "description": "Uses the local browser voices. Configure voices in your OS/browser settings.",
-                "type": "html",
-                "value": "Browser mode delegates speech to the user's device.",
-            }
-        )
 
     speech_section: SettingsSection = {
         "id": "speech",
@@ -1684,55 +1449,17 @@ def convert_in(settings: dict) -> Settings:
     return current
 
 
-def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None:
-    default_tts = get_default_settings()["tts"]
-    current_tts = settings_dict.get("tts") or {}
-    merged_tts: dict[str, Any] = {
-        "engine": default_tts["engine"],
-        "chatterbox": {**default_tts["chatterbox"]},
-        "xtts": {**default_tts["xtts"]},
-        "piper_vc": {**default_tts["piper_vc"]},
-        "kokoro": {**default_tts["kokoro"]},
-    }
-    merged_tts.update(current_tts)
-    chatterbox = {**merged_tts.get("chatterbox", {})}
-    xtts_settings = {**merged_tts.get("xtts", {})}
-    piper_vc = {**merged_tts.get("piper_vc", {})}
-    kokoro_settings = {**merged_tts.get("kokoro", {})}
-
-    if field_id == "tts_engine":
-        merged_tts["engine"] = value or default_tts["engine"]
-    elif field_id.startswith("tts_chatterbox_"):
-        key = field_id.removeprefix("tts_chatterbox_")
-        chatterbox[key] = value
-        merged_tts["chatterbox"] = chatterbox
-    elif field_id.startswith("tts_xtts_"):
-        key = field_id.removeprefix("tts_xtts_")
-        xtts_settings[key] = value
-        merged_tts["xtts"] = xtts_settings
-    elif field_id.startswith("tts_piper_vc_"):
-        key = field_id.removeprefix("tts_piper_vc_")
-        piper_vc[key] = value
-        merged_tts["piper_vc"] = piper_vc
-    elif field_id.startswith("tts_kokoro_"):
-        key = field_id.removeprefix("tts_kokoro_")
-        kokoro_settings[key] = value
-        merged_tts["kokoro"] = kokoro_settings
-
-    settings_dict["tts"] = merged_tts  # type: ignore
-
-
 def get_settings() -> Settings:
     global _settings
-    if not _settings:
+    if _settings is None:
         _settings = _read_settings_file()
-    if not _settings:
+    if _settings is None:
         _settings = get_default_settings()
-    norm = normalize_settings(_settings)
-    return norm
+    _settings = normalize_settings(_settings)
+    return _settings
 
 
-def set_settings(settings: Settings, apply: bool = True):
+def set_settings(settings: Settings, apply: bool = True) -> None:
     global _settings
     previous = _settings
     _settings = normalize_settings(settings)
@@ -1741,10 +1468,10 @@ def set_settings(settings: Settings, apply: bool = True):
         _apply_settings(previous)
 
 
-def set_settings_delta(delta: dict, apply: bool = True):
+def set_settings_delta(delta: dict, apply: bool = True) -> None:
     current = get_settings()
-    new = {**current, **delta}
-    set_settings(new, apply)  # type: ignore
+    merged = {**current, **delta}
+    set_settings(merged, apply)  # type: ignore[arg-type]
 
 
 def normalize_settings(settings: Settings) -> Settings:
@@ -1754,140 +1481,111 @@ def normalize_settings(settings: Settings) -> Settings:
     # adjust settings values to match current version if needed
     if "version" not in copy or copy["version"] != default["version"]:
         _adjust_to_version(copy, default)
-        copy["version"] = default["version"]  # sync version
+        copy["version"] = default["version"]
 
-    # remove keys that are not in default
-    keys_to_remove = [key for key in copy if key not in default]
-    for key in keys_to_remove:
-        del copy[key]
+    # remove keys not present in default
+    for key in list(copy.keys()):
+        if key not in default:
+            del copy[key]
 
-    # add missing keys and normalize types
+    # add missing keys / enforce types
     for key, value in default.items():
         if key not in copy:
             copy[key] = value
         else:
             try:
-                copy[key] = type(value)(copy[key])  # type: ignore
+                copy[key] = type(value)(copy[key])  # type: ignore[misc]
                 if isinstance(copy[key], str):
-                    copy[key] = copy[key].strip()  # strip strings
+                    copy[key] = copy[key].strip()
             except (ValueError, TypeError):
-                copy[key] = value  # make default instead
+                copy[key] = value
 
+    # ensure TTS subsection is normalised
     copy["tts"] = _normalize_tts_settings(copy.get("tts", {}), default["tts"])
 
-    # mcp server token is set automatically
+    # mcp server token regenerated per load
     copy["mcp_server_token"] = create_auth_token()
-
     return copy
 
 
+def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None:
+    default_tts = get_default_settings()["tts"]
+    current_tts = settings_dict.get("tts") or {}
+    neutts_default = default_tts.get("neutts", {})
+    neutts_current = current_tts.get("neutts") if isinstance(current_tts, dict) else {}
+
+    merged_neutts: dict[str, Any] = {**neutts_default}
+    if isinstance(neutts_current, dict):
+        for key, current_val in neutts_current.items():
+            merged_neutts[key] = current_val
+
+    merged: dict[str, Any] = {
+        "provider": str(current_tts.get("provider", default_tts["provider"])) if isinstance(current_tts, dict) else default_tts["provider"],
+        "sample_rate": _parse_int(current_tts.get("sample_rate") if isinstance(current_tts, dict) else None, default_tts["sample_rate"]),
+        "stream_default": _parse_bool(current_tts.get("stream_default") if isinstance(current_tts, dict) else None, default_tts["stream_default"]),
+        "neutts": merged_neutts,
+    }
+
+    if field_id == "tts_stream_default":
+        merged["stream_default"] = _parse_bool(value, default_tts["stream_default"])
+    elif field_id == "tts_quality_default":
+        quality = str(value).strip().lower() if isinstance(value, str) else str(value).lower()
+        if quality in {"q4", "q8"}:
+            merged_neutts["quality_default"] = quality
+        else:
+            merged_neutts["quality_default"] = neutts_default.get("quality_default", "q4")
+    elif field_id == "tts_sample_rate":
+        merged["sample_rate"] = _parse_int(value, default_tts["sample_rate"])
+    elif field_id == "tts_active_voice_id":
+        if value is None:
+            merged_neutts["default_voice_id"] = None
+        else:
+            text = str(value).strip()
+            merged_neutts["default_voice_id"] = None if text.lower() in {"none", "null", "undefined", ""} else text
+
+    merged["provider"] = "neutts"
+    settings_dict["tts"] = merged  # type: ignore
+
+
 def _normalize_tts_settings(value: dict[str, Any], default: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    engine = value.get("engine") if isinstance(value, dict) else None
-    result["engine"] = str(engine or default["engine"])
+    provider = str(value.get("provider") if isinstance(value, dict) else default.get("provider", "neutts")).strip().lower() or "neutts"
+    sample_rate = _parse_int(value.get("sample_rate") if isinstance(value, dict) else None, default.get("sample_rate", 24_000))
+    stream_default = _parse_bool(value.get("stream_default") if isinstance(value, dict) else None, default.get("stream_default", True))
 
-    default_cb = default.get("chatterbox", {})
-    incoming_cb = {}
-    if isinstance(value, dict):
-        incoming_cb = value.get("chatterbox", {}) if isinstance(value.get("chatterbox"), dict) else {}
+    neutts_default = default.get("neutts", {}) if isinstance(default, dict) else {}
+    incoming_neutts = value.get("neutts") if isinstance(value, dict) else {}
+    normalized_neutts: dict[str, Any] = {**neutts_default}
 
-    normalized_cb: dict[str, Any] = {}
-    for key, default_val in default_cb.items():
-        raw = incoming_cb.get(key, default_val)
-        if key == "device":
-            normalized_cb[key] = None if raw in (None, "", "auto") else str(raw)
-            continue
-        if key == "audio_prompt_path":
-            normalized_cb[key] = raw or None
-            continue
-        if key == "language_id":
-            normalized_cb[key] = str(raw) if raw else default_val
-            continue
-        if type(default_val) is bool:
-            normalized_cb[key] = _parse_bool(raw, default_val)
-            continue
-        if isinstance(default_val, int) and type(default_val) is not bool:
-            normalized_cb[key] = _parse_int(raw, default_val)
-            continue
-        if isinstance(default_val, float):
-            normalized_cb[key] = _parse_float(raw, default_val)
-            continue
-        normalized_cb[key] = raw if raw is not None else default_val
+    if isinstance(incoming_neutts, dict):
+        for key, default_val in neutts_default.items():
+            raw = incoming_neutts.get(key, default_val)
+            if key in {"backbone_repo", "codec_repo", "backbone_device", "codec_device", "model_cache_dir"}:
+                normalized_neutts[key] = str(raw).strip() if isinstance(raw, str) and raw.strip() else default_val
+            elif key == "quality_default":
+                candidate = str(raw).strip().lower() if isinstance(raw, str) else str(raw).lower()
+                normalized_neutts[key] = candidate if candidate in {"q4", "q8"} else neutts_default.get("quality_default", "q4")
+            elif key == "default_voice_id":
+                if raw is None:
+                    normalized_neutts[key] = None
+                else:
+                    text = str(raw).strip()
+                    if text.lower() in {"none", "null", "undefined", ""}:
+                        normalized_neutts[key] = None
+                    else:
+                        normalized_neutts[key] = text
+            elif key == "stream_chunk_seconds":
+                normalized_neutts[key] = _parse_float(raw, float(neutts_default.get("stream_chunk_seconds", 0.32)))
+            else:
+                normalized_neutts[key] = raw if raw is not None else default_val
+    else:
+        normalized_neutts = {**neutts_default}
 
-    result["chatterbox"] = normalized_cb
-
-    default_xtts = default.get("xtts", {})
-    incoming_xtts = {}
-    if isinstance(value, dict):
-        incoming_xtts = value.get("xtts", {}) if isinstance(value.get("xtts"), dict) else {}
-
-    normalized_xtts: dict[str, Any] = {}
-    for key, default_val in default_xtts.items():
-        raw = incoming_xtts.get(key, default_val)
-        if key == "device":
-            normalized_xtts[key] = None if raw in (None, "", "auto") else str(raw)
-            continue
-        if key in {"speaker", "language"}:
-            normalized_xtts[key] = str(raw).strip() if raw else (default_val or None)
-            continue
-        if key == "speaker_wav_path":
-            normalized_xtts[key] = (str(raw).strip() if isinstance(raw, str) else raw) or None
-            continue
-        if key == "model_id":
-            normalized_xtts[key] = str(raw or default_val)
-            continue
-        if isinstance(default_val, int) and type(default_val) is not bool:
-            normalized_xtts[key] = _parse_int(raw, default_val)
-            continue
-        if isinstance(default_val, float):
-            normalized_xtts[key] = _parse_float(raw, default_val)
-            continue
-        normalized_xtts[key] = raw if raw is not None else default_val
-
-    result["xtts"] = normalized_xtts
-
-    default_kokoro = default.get("kokoro", {})
-    incoming_kokoro = {}
-    if isinstance(value, dict):
-        incoming_kokoro = value.get("kokoro", {}) if isinstance(value.get("kokoro"), dict) else {}
-
-    normalized_kokoro: dict[str, Any] = {}
-    for key, default_val in default_kokoro.items():
-        raw = incoming_kokoro.get(key, default_val)
-        if key == "voice":
-            normalized_kokoro[key] = str(raw).strip() if raw else (default_val or "")
-            continue
-        if key == "speed":
-            normalized_kokoro[key] = _parse_float(raw, float(default_val))
-            continue
-        if key == "sample_rate":
-            normalized_kokoro[key] = _parse_int(raw, int(default_val))
-            continue
-        normalized_kokoro[key] = raw if raw is not None else default_val
-
-    result["kokoro"] = normalized_kokoro
-
-    default_piper = default.get("piper_vc", {})
-    incoming_piper = {}
-    if isinstance(value, dict):
-        incoming_piper = value.get("piper_vc", {}) if isinstance(value.get("piper_vc"), dict) else {}
-
-    normalized_piper: dict[str, Any] = {}
-    for key, default_val in default_piper.items():
-        raw = incoming_piper.get(key, default_val)
-        if key in {"piper_bin", "piper_model"}:
-            normalized_piper[key] = str(raw).strip() if raw else (default_val or "")
-            continue
-        if key == "target_voice_wav":
-            normalized_piper[key] = (str(raw).strip() if isinstance(raw, str) else raw) or None
-            continue
-        if isinstance(default_val, int) and type(default_val) is not bool:
-            normalized_piper[key] = _parse_int(raw, default_val)
-            continue
-        normalized_piper[key] = raw if raw is not None else default_val
-
-    result["piper_vc"] = normalized_piper
-    return result
+    return {
+        "provider": provider or "neutts",
+        "sample_rate": max(sample_rate, 8_000),
+        "stream_default": stream_default,
+        "neutts": normalized_neutts,
+    }
 
 
 def _parse_bool(value: Any, default: bool) -> bool:
@@ -1974,14 +1672,6 @@ def _write_sensitive_settings(settings: Settings):
 
 
 def get_default_settings() -> Settings:
-    import sys
-    default_tts_engine = "chatterbox"
-    try:
-        # Prefer browser TTS by default on Python 3.12+ where native backends may be unavailable
-        if sys.version_info[:2] >= (3, 12):
-            default_tts_engine = "browser"
-    except Exception:
-        pass
     return Settings(
         version=_get_version(),
         chat_model_provider="openrouter",
@@ -2064,40 +1754,18 @@ def get_default_settings() -> Settings:
         stt_silence_duration=1000,
         stt_waiting_timeout=2000,
         tts={
-            "engine": default_tts_engine,
-            "chatterbox": {
-                "device": None,
-                "multilingual": False,
-                "sample_rate": 24_000,
-                "exaggeration": 0.5,
-                "cfg": 0.35,
-                "audio_prompt_path": None,
-                "language_id": "en",
-                "max_chars": 600,
-                "join_silence_ms": 120,
-            },
-            "xtts": {
-                "model_id": "tts_models/multilingual/multi-dataset/xtts_v2",
-                "device": None,
-                "speaker": None,
-                "language": "en",
-                "speaker_wav_path": None,
-                "sample_rate": 24_000,
-                "max_chars": 400,
-                "join_silence_ms": 80,
-            },
-            "piper_vc": {
-                "piper_bin": "piper",
-                "piper_model": "",
-                "sample_rate": 22_050,
-                "max_chars": 280,
-                "join_silence_ms": 80,
-                "target_voice_wav": None,
-            },
-            "kokoro": {
-                "voice": "am_puck,am_onyx",
-                "speed": 1.1,
-                "sample_rate": 24_000,
+            "provider": "neutts",
+            "sample_rate": 24_000,
+            "stream_default": True,
+            "neutts": {
+                "backbone_repo": "neuphonic/neutts-air-q4-gguf",
+                "codec_repo": "neuphonic/neucodec-onnx-decoder",
+                "backbone_device": "mps",
+                "codec_device": "cpu",
+                "model_cache_dir": "data/tts/neutts/models",
+                "quality_default": "q4",
+                "default_voice_id": None,
+                "stream_chunk_seconds": 0.32,
             },
         },
         mcp_servers='{\n    "mcpServers": {}\n}',

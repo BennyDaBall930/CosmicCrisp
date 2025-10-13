@@ -34,24 +34,11 @@ const model = {
   stt_waiting_timeout: 2000,
 
   // TTS Settings
-  tts_engine: "chatterbox",
-  tts_chatterbox_device: "auto",
-  tts_chatterbox_multilingual: false,
-  tts_chatterbox_language_id: "en",
-  tts_chatterbox_exaggeration: 0.5,
-  tts_chatterbox_cfg: 0.5,
-  tts_chatterbox_audio_prompt_path: "",
-  tts_chatterbox_max_chars: 600,
-  tts_chatterbox_join_silence_ms: 120,
-
-  tts_xtts_model_id: "tts_models/multilingual/multi-dataset/xtts_v2",
-  tts_xtts_device: "auto",
-  tts_xtts_language: "en",
-  tts_xtts_speaker: "",
-  tts_xtts_speaker_wav_path: "",
-  tts_xtts_sample_rate: 24000,
-  tts_xtts_max_chars: 400,
-  tts_xtts_join_silence_ms: 80,
+  tts_engine: "neutts",
+  tts_stream_default: true,
+  tts_quality_default: "q4",
+  tts_sample_rate: 24000,
+  tts_active_voice_id: null,
 
   // TTS State
   isSpeaking: false,
@@ -75,16 +62,12 @@ const model = {
     return this.microphoneInput?.status || Status.INACTIVE;
   },
 
-  get ttsIsChatterbox() {
-    return (this.tts_engine || "").toLowerCase() === "chatterbox";
-  },
-
-  get ttsIsXTTS() {
-    return (this.tts_engine || "").toLowerCase() === "xtts";
+  get ttsProvider() {
+    return (this.tts_engine || "neutts").toLowerCase();
   },
 
   get ttsUsesServerBackend() {
-    return this.ttsIsChatterbox || this.ttsIsXTTS;
+    return this.ttsProvider === "neutts";
   },
 
   updateMicrophoneButtonUI() {
@@ -134,6 +117,14 @@ const model = {
     await this.loadSettings();
     this.setupBrowserTTS();
     this.setupUserInteractionHandling();
+    // Respect server default: if the local preference hasn't been set yet,
+    // enable speech automatically when stream_default is true.
+    try {
+      const ls = localStorage.getItem("speech");
+      if (ls === null && this.tts_stream_default === true) {
+        localStorage.setItem("speech", "true");
+      }
+    } catch (_) {}
   },
 
   // Load settings from server
@@ -146,11 +137,21 @@ const model = {
       );
 
       if (speechSection) {
+        console.log("[TTS-DEBUG] Speech section fields:", speechSection.fields);
         speechSection.fields.forEach((field) => {
+          console.log(`[TTS-DEBUG] Processing field ${field.id}: ${field.value} (type: ${typeof field.value})`);
           if (this.hasOwnProperty(field.id)) {
-            this[field.id] = field.value;
+            let value = field.value;
+            if (field.id === "tts_active_voice_id" && (value === "None" || value === "null")) {
+              value = null;
+            }
+            console.log(`[TTS-DEBUG] Setting this.${field.id} = ${value}`);
+            this[field.id] = value;
           }
         });
+        console.log(`[TTS-DEBUG] Final tts_stream_default value: ${this.tts_stream_default} (type: ${typeof this.tts_stream_default})`);
+      } else {
+        console.log("[TTS-DEBUG] No Speech section found in settings");
       }
     } catch (error) {
       window.toastFetchError("Failed to load speech settings", error);
@@ -194,6 +195,7 @@ const model = {
 
   // main speak function, allows to speak a stream of text that is generated piece by piece
   async speakStream(id, text, finished = false) {
+    console.log("[TTS-DEBUG] speakStream called:", { id, textLength: text?.length, finished, ttsStreamDefault: this.tts_stream_default });
     // if already running the same stream, do nothing
     if (
       this.ttsStream &&
@@ -226,6 +228,7 @@ const model = {
     }
 
     const useServerTTS = this.ttsUsesServerBackend;
+    console.log("[TTS-DEBUG] useServerTTS:", useServerTTS);
 
     // cleanup text
     const cleanText = this.cleanText(text);
@@ -286,35 +289,19 @@ const model = {
 
   // speak wrapper
   async _speak(text, waitForPrevious, terminator) {
-    const engine = (this.tts_engine || "").toLowerCase();
-
-    if (engine === "chatterbox") {
-      try {
-        await this.speakWithChatterbox(text, waitForPrevious, terminator);
-        return;
-      } catch (error) {
-        console.error(error);
-        if (this.showsEngineBanner !== false) {
-          this.showEngineBanner("chatterbox", error);
-        }
-        return await this.speakWithBrowser(text, waitForPrevious, terminator);
+    try {
+      await this.speakWithNeutts(text, waitForPrevious, terminator);
+    } catch (error) {
+      console.error("NeuTTS playback failed", error);
+      if (this.activeStream) {
+        try {
+          await this.activeStream.stop();
+        } catch (_) {}
+        this.activeStream = null;
       }
+      this.isSpeaking = false;
+      throw error;
     }
-
-    if (engine === "xtts") {
-      try {
-        await this.speakWithXTTS(text, waitForPrevious, terminator);
-        return;
-      } catch (error) {
-        console.error(error);
-        if (this.showsEngineBanner !== false) {
-          this.showEngineBanner("xtts", error);
-        }
-        return await this.speakWithBrowser(text, waitForPrevious, terminator);
-      }
-    }
-
-    return await this.speakWithBrowser(text, waitForPrevious, terminator);
   },
 
   chunkText(text, { maxChunkLength = 135, lineSeparator = "..." } = {}) {
@@ -438,30 +425,10 @@ const model = {
     }
   },
 
-  // Browser TTS
-  async speakWithBrowser(text, waitForPrevious = false, terminator = null) {
-    // wait for previous to finish if requested
-    while (waitForPrevious && this.isSpeaking) await sleep(25);
-    if (terminator && terminator()) return;
-
-    // stop previous if any
-    this.stopAudio();
-
-    this.browserUtterance = new SpeechSynthesisUtterance(text);
-    this.browserUtterance.onstart = () => {
-      this.isSpeaking = true;
-    };
-    this.browserUtterance.onend = () => {
-      this.isSpeaking = false;
-    };
-
-    this.synth.speak(this.browserUtterance);
-  },
-
-  // Chatterbox TTS
-  async speakWithChatterbox(text, waitForPrevious = false, terminator = null) {
+  async speakWithNeutts(text, waitForPrevious = false, terminator = null, voiceId = null) {
     try {
-      ttsLog("speakWithChatterbox start", {
+      console.log("[TTS-DEBUG] speakWithNeutts called:", { textLen: text ? text.length : 0, waitForPrevious, hasTerminator: Boolean(terminator) });
+      ttsLog("speakWithNeutts start", {
         textLen: text ? text.length : 0,
         waitForPrevious,
         hasTerminator: Boolean(terminator),
@@ -472,25 +439,18 @@ const model = {
       this.stopAudio();
       ttsLog("audio stopped");
 
-      const style = this._buildChatterboxStyle();
-      const targetChars = Math.max(
-        80,
-        Math.min(this.tts_chatterbox_max_chars || 200, 400)
-      );
-      const joinMs = Math.max(0, this.tts_chatterbox_join_silence_ms ?? 5);
-      const firstChunkChars = 0;
-
-      this.isSpeaking = true;
-
+      let preferredVoice = voiceId || this.tts_active_voice_id;
+      if (preferredVoice === "None" || preferredVoice === "null" || preferredVoice === "undefined") {
+        preferredVoice = null;
+      }
+      console.log("[TTS-DEBUG] Calling playStreamedTTS with:", { text, voiceId: preferredVoice, sampleRate: this.tts_sample_rate });
       const stream = await playStreamedTTS({
         text,
-        style,
-        targetChars,
-        joinMs,
-        sampleRate: 24000,
-        firstChunkChars,
-        engine: "chatterbox",
+        voiceId: preferredVoice,
+        sampleRate: this._parseNumber(this.tts_sample_rate, 24000),
+        stream: true,
       });
+      console.log("[TTS-DEBUG] playStreamedTTS returned:", { hasStream: Boolean(stream) });
       ttsLog("stream handler created", { hasStream: Boolean(stream) });
 
       if (!stream) {
@@ -505,88 +465,7 @@ const model = {
         return;
       }
 
-      this.activeStream = stream;
-
-      stream.finished
-        .then(({ totalSamples, aborted }) => {
-          if (this.activeStream !== stream) return;
-          ttsLog("stream finished event", { totalSamples, aborted });
-          if (aborted) {
-            this.activeStream = null;
-            this.isSpeaking = false;
-            return;
-          }
-          const durationMs = (totalSamples / 24000) * 1000;
-          setTimeout(() => {
-            if (this.activeStream === stream) {
-              this.activeStream = null;
-              this.isSpeaking = false;
-              ttsLog("stream playback window elapsed", { durationMs });
-            }
-          }, Math.max(0, durationMs) + 50);
-        })
-        .catch((error) => {
-          if (this.activeStream === stream) {
-            this.activeStream = null;
-            this.isSpeaking = false;
-          }
-          ttsLog("stream finished with error", { message: error?.message });
-          console.error("Chatterbox stream error", error);
-        });
-    } catch (error) {
-      this.activeStream = null;
-      this.isSpeaking = false;
-      throw error;
-    }
-  },
-
-  async speakWithXTTS(text, waitForPrevious = false, terminator = null) {
-    try {
-      ttsLog("speakWithXTTS start", {
-        textLen: text ? text.length : 0,
-        waitForPrevious,
-        hasTerminator: Boolean(terminator),
-      });
-      while (waitForPrevious && this.isSpeaking) await sleep(25);
-      if (terminator && terminator()) return;
-
-      this.stopAudio();
-      ttsLog("audio stopped");
-
-      const style = this._buildXTTSStyle();
-      const targetChars = Math.max(
-        80,
-        Math.min(this.tts_xtts_max_chars || 200, 600)
-      );
-      const joinMs = Math.max(0, this.tts_xtts_join_silence_ms ?? 5);
-      const sampleRate = this._parseNumber(this.tts_xtts_sample_rate, 24000);
-      const firstChunkChars = 0;
-
       this.isSpeaking = true;
-
-      const stream = await playStreamedTTS({
-        text,
-        style,
-        targetChars,
-        joinMs,
-        sampleRate,
-        firstChunkChars,
-        engine: "xtts",
-      });
-      ttsLog("stream handler created", { hasStream: Boolean(stream) });
-
-      if (!stream) {
-        this.isSpeaking = false;
-        return;
-      }
-
-      if (terminator && terminator()) {
-        ttsLog("terminator triggered");
-        await stream.stop();
-        this.isSpeaking = false;
-        return;
-      }
-
       this.activeStream = stream;
 
       stream.finished
@@ -598,7 +477,8 @@ const model = {
             this.isSpeaking = false;
             return;
           }
-          const durationMs = (totalSamples / sampleRate) * 1000;
+          const rate = stream.sampleRate || this._parseNumber(this.tts_sample_rate, 24000);
+          const durationMs = (totalSamples / rate) * 1000;
           setTimeout(() => {
             if (this.activeStream === stream) {
               this.activeStream = null;
@@ -613,46 +493,16 @@ const model = {
             this.isSpeaking = false;
           }
           ttsLog("stream finished with error", { message: error?.message });
-          console.error("XTTS stream error", error);
+          console.error("NeuTTS stream error", error);
         });
     } catch (error) {
+      console.error("[TTS-DEBUG] speakWithNeutts error:", error);
       this.activeStream = null;
       this.isSpeaking = false;
       throw error;
     }
   },
 
-  _buildChatterboxStyle() {
-    const style = {
-      exaggeration: this._parseNumber(this.tts_chatterbox_exaggeration, 0.5),
-      cfg: this._parseNumber(this.tts_chatterbox_cfg, 0.5),
-    };
-
-    const promptPath = (this.tts_chatterbox_audio_prompt_path || "").trim();
-    if (promptPath) style.audio_prompt_path = promptPath;
-
-    const multilingual = this._parseBool(this.tts_chatterbox_multilingual, false);
-    if (multilingual) {
-      const lang = (this.tts_chatterbox_language_id || "").trim();
-      if (lang) style.language_id = lang;
-    }
-
-    return style;
-  },
-
-  _buildXTTSStyle() {
-    const style = {
-      language: (this.tts_xtts_language || "en").trim() || "en",
-    };
-
-    const speaker = (this.tts_xtts_speaker || "").trim();
-    if (speaker) style.speaker = speaker;
-
-    const promptPath = (this.tts_xtts_speaker_wav_path || "").trim();
-    if (promptPath) style.speaker_wav_path = promptPath;
-
-    return style;
-  },
 
   _parseBool(value, fallback) {
     if (typeof value === "boolean") return value;
@@ -901,18 +751,11 @@ const model = {
 
   // Show engine requirement banners when engines fail
   showEngineBanner(engine, error) {
-    const engineMessages = {
-      chatterbox: "Chatterbox TTS requires Python 3.10 or 3.11. Consider using browser TTS (no setup required) or set up XTTS sidecar for better quality.",
-      xtts: "XTTS TTS requires a running sidecar service. Run './setup.sh && ./run.sh' to start the sidecar, or use browser TTS (no setup required).",
-    };
-
-    const message = engineMessages[engine.toLowerCase()] ||
-      `${engine} TTS engine failed. Falling back to browser TTS (no setup required). Details: ${error?.message || error}`;
-
+    const message = `NeuTTS-Air synthesis error (${engine || "neutts"}): ${error?.message || error}`;
     if (window.toast) {
       window.toast(message, "warning", 8000);
     } else {
-      console.warn(`[TTS] Engine requirement: ${message}`);
+      console.warn(`[TTS] ${message}`);
     }
   },
 };

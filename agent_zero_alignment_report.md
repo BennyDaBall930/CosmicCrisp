@@ -72,7 +72,7 @@
 - **Action**: expose MLX status via the new runtime container so other services can query `runtime.observability`, and consider porting `memory_dashboard` against the new memory API to retain at-a-glance visibility.
 
 ## 5. Helpers & Services
-- **Cosmic Crisp exclusives**: Added `python/helpers/chatterbox_tts.py:1-220`, `python/helpers/mlx_server.py:1-198`, `python/helpers/playwright_simple.py:1-140`, `python/helpers/signal_handler.py:1-120`, and `python/helpers/xtts_tts.py:1-240`.
+- **Cosmic Crisp exclusives**: Replaced legacy TTS stack with `python/runtime/audio/neutts_provider.py`, updated runtime config wiring, and refreshed UI/agent hooks for NeuTTS-Air.
 - **Missing compared to Agent Zero**: `python/helpers/secrets.py:1-200`, `python/helpers/shell_ssh.py:1-180`, `python/helpers/browser_use_monkeypatch.py:1-160`, `python/helpers/faiss_monkey_patch.py:1-140`, `python/helpers/guids.py:1-80`, `python/helpers/docker.py:1-200`.
 - **Action**: selectively restore `secrets.py`, `shell_ssh.py`, and `guids.py` (for deterministic IDs) while keeping Docker helpers out per project constraints. Provide shims if the runtime container needs to deliver SSH execution via an alternate backend.
 

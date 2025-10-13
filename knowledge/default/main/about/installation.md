@@ -15,7 +15,7 @@ Apple Zero ships with a native macOS toolchain—no Docker images or Linux VMs. 
 
 ```bash
 # from the repository root
-./dev/macos/setup.sh
+./setup.sh
 ```
 
 The script:
@@ -26,7 +26,7 @@ The script:
 When setup completes, start the runtime and UI with:
 
 ```bash
-./dev/macos/run.sh
+./run.sh
 ```
 
 `run.sh` activates the virtualenv, checks critical Python modules, isolates browser-use caches under `./tmp`, seeds a SearXNG instance, and serves the Apple Zero web client (defaults to `http://localhost:8080`). Use `Ctrl+C` to stop the orchestrator.
@@ -35,7 +35,7 @@ When setup completes, start the runtime and UI with:
 1. Copy the example environment file: `cp .env.example .env`.
 2. Populate API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, etc.).
 3. Optional: create `runtime.toml` for repeatable defaults (embeddings provider, router policies, token budgets).
-4. Run `./dev/macos/run.sh` and sign in to providers or LM Studio as needed.
+4. Run `./run.sh` and sign in to providers or LM Studio as needed.
 
 ### Verifying the Install
 - Visit `http://localhost:8080` to confirm the UI loads and receives SSE timelines.
@@ -73,14 +73,14 @@ export XDG_CONFIG_HOME="$(pwd)/tmp/xdg"
 python -m python.runtime.api.app
 ```
 
-Use `open http://localhost:8080` to reach the UI when running `./dev/macos/run.sh`, or connect to the FastAPI server via the CLI scripts under `run/`.
+Use `open http://localhost:8080` to reach the UI when running `./run.sh`, or connect to the FastAPI server via the CLI scripts under `run/`.
 
 ## Optional Integrations
 - **Chrome Remote Debugging:** export `A0_CHROME_EXECUTABLE` and `A0_CHROME_DEBUG_PORT` before calling `run.sh` if you need a specific Chrome build for the browser tool.
 - **Observability:** set `HELICONE_ENABLED=true` plus `HELICONE_*` keys to forward telemetry. Logs land in `./logs/runtime_observability.jsonl`; Prometheus metrics are exposed at `/runtime/admin/metrics`.
 
 ## Troubleshooting
-- Missing dependencies? Re-run `./dev/macos/setup.sh` after updating Homebrew or Python.
+- Missing dependencies? Re-run `./setup.sh` after updating Homebrew or Python.
 - Browser tool failing to launch? Ensure `playwright install chromium` completed and that `PLAYWRIGHT_BROWSERS_PATH` points to `./tmp/playwright`.
 - SSE stream drops? Check `logs/` for runtime errors and verify your API quotas.
 

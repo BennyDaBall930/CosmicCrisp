@@ -6,11 +6,11 @@ Apple Zero is an AI agent framework based on the open-source project Agent Zero.
    ```bash
    git clone https://github.com/your-org/apple-zero.git
    cd apple-zero
-   ./dev/macos/setup.sh
+   ./setup.sh
    ```
 2. **Run the agent**
    ```bash
-   ./dev/macos/run.sh
+   ./run.sh
    ```
 3. **Open the web interface**
    Navigate to `http://localhost:8080` in your browser.

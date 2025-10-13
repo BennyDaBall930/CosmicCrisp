@@ -1,0 +1,142 @@
+<html>
+  <head>
+    <title>Voice Lab</title>
+    <script type="module">
+      import { store } from "/components/settings/speech/voice-lab-store.js";
+      console.log("voice-lab-store.js loaded", store);
+    </script>
+  </head>
+  <body>
+    <div x-data x-init="$store.voiceLab && $store.voiceLab.init()">
+      <template x-if="$store.voiceLab">
+        <div class="voice-lab">
+          <div class="voice-lab__errors" x-show="$store.voiceLab.error">
+            <span class="error" x-text="$store.voiceLab.error"></span>
+          </div>
+
+          <fieldset class="voice-lab__form" :disabled="$store.voiceLab.loading">
+            <legend>Create Voice</legend>
+            <label>
+              <span>Name</span>
+              <input type="text" x-model="$store.voiceLab.nameInput" placeholder="Legacy Lane" />
+            </label>
+            <label>
+              <span>Reference Text</span>
+              <textarea x-model="$store.voiceLab.refTextInput" rows="3" placeholder="Paste the transcript that matches your reference clip."></textarea>
+            </label>
+            <label>
+              <span>Reference Audio (WAV, 3–15 s)</span>
+              <input id="voice-lab-file" type="file" accept="audio/wav" @change="$store.voiceLab.setFile($event.target.files[0])" />
+            </label>
+            <button type="button" class="btn btn-primary" @click="$store.voiceLab.registerVoice()">Save Voice</button>
+          </fieldset>
+
+          <section class="voice-lab__voices">
+            <header class="voice-lab__voices-header">
+              <h3>Voice Library</h3>
+              <div class="actions">
+                <button class="btn btn-field" :disabled="$store.voiceLab.loading" @click="$store.voiceLab.refresh()">Refresh</button>
+                <button class="btn btn-danger" :disabled="$store.voiceLab.loading" @click="$store.voiceLab.resetVoices()">Reset Voices</button>
+              </div>
+            </header>
+            <template x-if="$store.voiceLab.voices.length === 0">
+              <p class="muted">No custom voices yet. Upload a reference clip to create one.</p>
+            </template>
+            <template x-for="voice in $store.voiceLab.voices" :key="voice.id">
+              <div class="voice-card">
+                <div class="voice-card__info">
+                  <strong x-text="voice.name"></strong>
+                  <span class="voice-card__meta">
+                    ID: <code x-text="voice.id"></code>
+                    <template x-if="$store.voiceLab.defaultVoiceId === voice.id">
+                      <span class="badge">Default</span>
+                    </template>
+                  </span>
+                  <span class="voice-card__timestamp" x-text="new Date((voice.created_at || Date.now()/1000) * 1000).toLocaleString()"></span>
+                </div>
+                <div class="voice-card__actions">
+                  <button class="btn btn-field" :disabled="$store.voiceLab.loading" @click="$store.voiceLab.previewVoice(voice)">Preview</button>
+                  <button class="btn btn-field" :disabled="$store.voiceLab.loading || $store.voiceLab.defaultVoiceId === voice.id" @click="$store.voiceLab.setDefaultVoice(voice.id)">Set Default</button>
+                  <button class="btn btn-danger" :disabled="$store.voiceLab.loading" @click="$store.voiceLab.deleteVoice(voice.id)">Delete</button>
+                </div>
+              </div>
+            </template>
+          </section>
+        </div>
+      </template>
+    </div>
+
+    <style>
+      .voice-lab {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      fieldset.voice-lab__form {
+        border: 1px solid var(--border-subtle, #ddd);
+        padding: 1rem;
+        border-radius: 0.5rem;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 0.75rem;
+      }
+      fieldset.voice-lab__form label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      fieldset.voice-lab__form input,
+      fieldset.voice-lab__form textarea {
+        border: 1px solid var(--border-subtle, #ccc);
+        border-radius: 0.375rem;
+        padding: 0.5rem;
+        font-size: 0.95rem;
+      }
+      .voice-lab__voices-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .voice-card {
+        border: 1px solid var(--border-subtle, #ddd);
+        border-radius: 0.5rem;
+        padding: 0.75rem;
+        margin-top: 0.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .voice-card__info {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      .voice-card__meta {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.9rem;
+        color: var(--text-subtle, #666);
+      }
+      .voice-card__actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .badge {
+        background: var(--accent, #2563eb);
+        color: #fff;
+        padding: 0.1rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+      }
+      .muted {
+        color: var(--text-subtle, #666);
+        font-style: italic;
+      }
+      .voice-lab__errors .error {
+        color: var(--danger, #c53030);
+      }
+    </style>
+  </body>
+</html>

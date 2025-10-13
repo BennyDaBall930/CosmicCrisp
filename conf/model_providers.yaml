@@ -111,9 +111,6 @@ embedding:
     litellm_provider: openai
 
 tts:
-  chatterbox:
-    name: Chatterbox
-    type: local
-  xtts:
-    name: Coqui XTTS
+  neutts:
+    name: NeuTTS-Air
     type: local

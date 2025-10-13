@@ -1,321 +1,133 @@
 import React from "react";
 
-type XTTSSettings = {
-  model_id: string;
-  device: "auto" | "cuda" | "mps" | "cpu";
-  language: string;
-  speaker?: string | null;
-  speaker_wav_path?: string | null;
-  sample_rate: number;
-  join_silence_ms: number;
-  max_chars: number;
+type NeuTTSConfig = {
+  backbone_repo: string;
+  codec_repo: string;
+  backbone_device: string;
+  codec_device: string;
+  model_cache_dir: string;
+  quality_default: "q4" | "q8";
+  stream_chunk_seconds: number;
 };
 
 type TTSSettings = {
-  engine: "chatterbox" | "xtts" | "browser";
-  chatterbox: {
-    device: "auto" | "mps" | "cuda" | "cpu";
-    multilingual: boolean;
-    language_id: string;
-    exaggeration: number;
-    cfg: number;
-    audio_prompt_path?: string | null;
-    max_chars: number;
-    join_silence_ms: number;
-  };
-  xtts: XTTSSettings;
+  provider: "neutts";
+  sample_rate: number;
+  stream_default: boolean;
+  neutts: NeuTTSConfig;
 };
-
-const LANGS = [
-  { id: "en", label: "English" },
-  { id: "fr", label: "French" },
-  { id: "zh", label: "Chinese" },
-  { id: "es", label: "Spanish" },
-  { id: "de", label: "German" },
-  { id: "ja", label: "Japanese" },
-  { id: "ko", label: "Korean" },
-  { id: "it", label: "Italian" },
-  { id: "pt", label: "Portuguese" },
-  { id: "ru", label: "Russian" },
-  { id: "ar", label: "Arabic" },
-  { id: "hi", label: "Hindi" },
-  { id: "nl", label: "Dutch" },
-  { id: "sv", label: "Swedish" },
-  { id: "da", label: "Danish" },
-  { id: "no", label: "Norwegian" },
-  { id: "fi", label: "Finnish" },
-  { id: "pl", label: "Polish" },
-  { id: "cs", label: "Czech" },
-  { id: "tr", label: "Turkish" },
-  { id: "el", label: "Greek" },
-  { id: "th", label: "Thai" },
-  { id: "vi", label: "Vietnamese" },
-];
 
 export function TTSSettingsPanel(props: {
   value: TTSSettings;
   onChange: (v: TTSSettings) => void;
 }) {
   const v = props.value;
-  const cb = v.chatterbox;
-  const xtts = v.xtts;
+  const neutts = v.neutts;
 
-  const setChatterbox = (patch: Partial<typeof cb>) =>
-    props.onChange({ ...v, chatterbox: { ...cb, ...patch } });
-
-  const setXTTS = (patch: Partial<typeof xtts>) =>
-    props.onChange({ ...v, xtts: { ...xtts, ...patch } });
+  const update = (patch: Partial<TTSSettings>) => props.onChange({ ...v, ...patch });
+  const updateNeuTTS = (patch: Partial<NeuTTSConfig>) => update({ neutts: { ...neutts, ...patch } });
 
   return (
     <div className="space-y-4">
-      <h3 className="text-lg font-semibold">Text-to-Speech</h3>
+      <h3 className="text-lg font-semibold">NeuTTS-Air</h3>
+      <p className="text-sm text-gray-500">
+        NeuTTS-Air runs locally with Metal acceleration and watermarked outputs. Configure defaults below and manage custom voices from the Voice Lab panel.
+      </p>
+
+      <label className="flex items-center justify-between">
+        <span>Streaming (default)</span>
+        <input
+          type="checkbox"
+          checked={v.stream_default}
+          onChange={(e) => update({ stream_default: e.target.checked })}
+        />
+      </label>
+
+      <label className="flex items-center justify-between">
+        <span>Sample rate (Hz)</span>
+        <input
+          type="number"
+          className="border rounded px-2 py-1 w-32 text-right"
+          value={v.sample_rate}
+          onChange={(e) => update({ sample_rate: Number(e.target.value) || 24000 })}
+          min={8000}
+          step={1000}
+        />
+      </label>
+
+      <label className="flex items-center justify-between">
+        <span>Quality</span>
+        <select
+          className="border rounded px-2 py-1"
+          value={neutts.quality_default}
+          onChange={(e) => updateNeuTTS({ quality_default: e.target.value as NeuTTSConfig["quality_default"] })}
+        >
+          <option value="q4">Q4 (fast)</option>
+          <option value="q8">Q8 (high fidelity)</option>
+        </select>
+      </label>
+
+      <div className="space-y-2">
+        <label className="flex flex-col">
+          <span className="mb-1">Backbone repository</span>
+          <input
+            className="border rounded px-2 py-1"
+            value={neutts.backbone_repo}
+            onChange={(e) => updateNeuTTS({ backbone_repo: e.target.value })}
+          />
+        </label>
+        <label className="flex flex-col">
+          <span className="mb-1">Codec repository</span>
+          <input
+            className="border rounded px-2 py-1"
+            value={neutts.codec_repo}
+            onChange={(e) => updateNeuTTS({ codec_repo: e.target.value })}
+          />
+        </label>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <label className="flex items-center justify-between">
-          <span>TTS Engine</span>
-          <select
+        <label className="flex flex-col">
+          <span className="mb-1">Backbone device</span>
+          <input
             className="border rounded px-2 py-1"
-            value={v.engine}
-            onChange={(event) =>
-              props.onChange({ ...v, engine: event.target.value as TTSSettings["engine"] })
-            }
-          >
-            <option value="chatterbox">Chatterbox</option>
-            <option value="xtts">Coqui XTTS</option>
-            <option value="browser">Browser</option>
-          </select>
+            value={neutts.backbone_device}
+            onChange={(e) => updateNeuTTS({ backbone_device: e.target.value })}
+          />
         </label>
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex items-center justify-between">
-            <span>Device</span>
-            <select
-              className="border rounded px-2 py-1"
-              value={cb.device ?? "auto"}
-              onChange={(e) => setChatterbox({ device: e.target.value as any })}
-            >
-              <option value="auto">Auto</option>
-              <option value="mps">Apple GPU (MPS)</option>
-              <option value="cuda">CUDA</option>
-              <option value="cpu">CPU</option>
-            </select>
-          </label>
-        ) : v.engine === "xtts" ? (
-          <label className="flex items-center justify-between">
-            <span>Device</span>
-            <select
-              className="border rounded px-2 py-1"
-              value={xtts.device ?? "auto"}
-              onChange={(e) => setXTTS({ device: e.target.value as any })}
-            >
-              <option value="auto">Auto</option>
-              <option value="cuda">CUDA</option>
-              <option value="mps">Apple GPU (MPS)</option>
-              <option value="cpu">CPU</option>
-            </select>
-          </label>
-        ) : null}
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex items-center justify-between">
-            <span>Multilingual</span>
-            <input
-              type="checkbox"
-              checked={cb.multilingual}
-              onChange={(e) => setChatterbox({ multilingual: e.target.checked })}
-            />
-          </label>
-        ) : null}
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex items-center justify-between">
-            <span>Language</span>
-            <select
-              className="border rounded px-2 py-1"
-              value={cb.language_id}
-              onChange={(e) => setChatterbox({ language_id: e.target.value })}
-              disabled={!cb.multilingual}
-            >
-              {LANGS.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex flex-col">
-            <span className="mb-1">Emotion (exaggeration)</span>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={cb.exaggeration}
-              onChange={(e) =>
-                setChatterbox({ exaggeration: parseFloat(e.target.value) })
-              }
-            />
-            <small className="text-gray-500">
-              0.5 is default; increase for more intensity (can speed speech).
-            </small>
-          </label>
-        ) : null}
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex flex-col">
-            <span className="mb-1">CFG (style/pacing)</span>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={cb.cfg}
-              onChange={(e) => setChatterbox({ cfg: parseFloat(e.target.value) })}
-            />
-            <small className="text-gray-500">
-              Lower (~0.3) slows pacing; 0.35 default.
-            </small>
-          </label>
-        ) : null}
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex flex-col md:col-span-2">
-            <span className="mb-1">Reference Voice (wav)</span>
-            <input
-              type="text"
-              placeholder="/path/to/voice.wav"
-              value={cb.audio_prompt_path ?? ""}
-              onChange={(e) => setChatterbox({ audio_prompt_path: e.target.value })}
-            />
-            <small className="text-gray-500">
-              Optional zero-shot voice cloning clip (7–20s recommended).
-            </small>
-          </label>
-        ) : null}
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex items-center justify-between">
-            <span>Chunk Size (chars)</span>
-            <input
-              className="border rounded px-2 py-1 w-32"
-              type="number"
-              min={140}
-              max={2000}
-              value={cb.max_chars}
-              onChange={(e) =>
-                setChatterbox({ max_chars: parseInt(e.target.value, 10) })
-              }
-            />
-          </label>
-        ) : null}
-
-        {v.engine === "chatterbox" ? (
-          <label className="flex items-center justify-between">
-            <span>Join Gap (ms)</span>
-            <input
-              className="border rounded px-2 py-1 w-32"
-              type="number"
-              min={0}
-              max={2000}
-              value={cb.join_silence_ms}
-              onChange={(e) =>
-                setChatterbox({ join_silence_ms: parseInt(e.target.value, 10) })
-              }
-            />
-          </label>
-        ) : null}
-
-        {v.engine === "xtts" ? (
-          <>
-            <label className="flex flex-col md:col-span-2">
-              <span className="mb-1">Model (Coqui repo or path)</span>
-              <input
-                type="text"
-                placeholder="tts_models/multilingual/multi-dataset/xtts_v2"
-                value={xtts.model_id}
-                onChange={(e) => setXTTS({ model_id: e.target.value })}
-              />
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Language</span>
-              <input
-                className="border rounded px-2 py-1 w-32"
-                type="text"
-                value={xtts.language}
-                onChange={(e) => setXTTS({ language: e.target.value })}
-              />
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Speaker preset</span>
-              <input
-                className="border rounded px-2 py-1"
-                type="text"
-                placeholder="female-en-5"
-                value={xtts.speaker ?? ""}
-                onChange={(e) => setXTTS({ speaker: e.target.value })}
-              />
-            </label>
-
-            <label className="flex flex-col md:col-span-2">
-              <span className="mb-1">Reference voice (wav)</span>
-              <input
-                type="text"
-                placeholder="/path/to/speaker.wav"
-                value={xtts.speaker_wav_path ?? ""}
-                onChange={(e) => setXTTS({ speaker_wav_path: e.target.value })}
-              />
-              <small className="text-gray-500">
-                Optional 5–10 second clip to clone a custom voice.
-              </small>
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Sample rate</span>
-              <input
-                className="border rounded px-2 py-1 w-24"
-                type="number"
-                min={8000}
-                value={xtts.sample_rate}
-                onChange={(e) => setXTTS({ sample_rate: parseInt(e.target.value, 10) })}
-              />
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Chunk Size (chars)</span>
-              <input
-                className="border rounded px-2 py-1 w-24"
-                type="number"
-                min={100}
-                value={xtts.max_chars}
-                onChange={(e) => setXTTS({ max_chars: parseInt(e.target.value, 10) })}
-              />
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Join Gap (ms)</span>
-              <input
-                className="border rounded px-2 py-1 w-24"
-                type="number"
-                min={0}
-                value={xtts.join_silence_ms}
-                onChange={(e) => setXTTS({ join_silence_ms: parseInt(e.target.value, 10) })}
-              />
-            </label>
-          </>
-        ) : null}
-
-        {v.engine === "browser" ? (
-          <div className="md:col-span-2 text-sm text-gray-500">
-            Browser speech synthesis uses your system voices. Configure voices in
-            your browser or operating system preferences.
-          </div>
-        ) : null}
+        <label className="flex flex-col">
+          <span className="mb-1">Codec device</span>
+          <input
+            className="border rounded px-2 py-1"
+            value={neutts.codec_device}
+            onChange={(e) => updateNeuTTS({ codec_device: e.target.value })}
+          />
+        </label>
       </div>
+
+      <label className="flex flex-col">
+        <span className="mb-1">Model cache directory</span>
+        <input
+          className="border rounded px-2 py-1"
+          value={neutts.model_cache_dir}
+          onChange={(e) => updateNeuTTS({ model_cache_dir: e.target.value })}
+        />
+      </label>
+
+      <label className="flex flex-col">
+        <span className="mb-1">Stream chunk seconds</span>
+        <input
+          type="number"
+          className="border rounded px-2 py-1 w-32 text-right"
+          value={neutts.stream_chunk_seconds}
+          onChange={(e) =>
+            updateNeuTTS({ stream_chunk_seconds: Number(e.target.value) || 0.32 })
+          }
+          min={0.1}
+          max={1.0}
+          step={0.02}
+        />
+      </label>
     </div>
   );
 }

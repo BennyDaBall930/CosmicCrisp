@@ -15,10 +15,12 @@ from .container import (
     get_model_router,
     get_observability,
     get_token_service,
+    get_tts_provider,
     memory,
     model_router,
     observability,
     tokens,
+    tts,
     tool_registry,
 )
 from .tokenizer.token_service import TokenService
@@ -31,6 +33,7 @@ __all__ = [
     "memory",
     "observability",
     "model_router",
+    "tts",
     "tokens",
     "tool_registry",
     "get_config",
@@ -39,4 +42,5 @@ __all__ = [
     "get_model_router",
     "get_observability",
     "get_token_service",
+    "get_tts_provider",
 ]

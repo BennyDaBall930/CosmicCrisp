@@ -1,0 +1,13 @@
+[tts]
+provider = "neutts"
+sample_rate = 24000
+stream_default = true
+
+[tts.neutts]
+backbone_repo = "neuphonic/neutts-air-q4-gguf"
+codec_repo = "neuphonic/neucodec-onnx-decoder"
+backbone_device = "mps"
+codec_device = "cpu"
+model_cache_dir = "data/tts/neutts/models"
+quality_default = "q4"
+stream_chunk_seconds = 0.32
