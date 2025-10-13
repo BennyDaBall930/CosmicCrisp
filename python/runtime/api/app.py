@@ -274,6 +274,19 @@ async def tts_reset_voices() -> Dict[str, Any]:
 async def tts_set_default(payload: TTSDefaultRequest) -> Dict[str, Any]:
     provider = get_tts_provider()
     provider.set_default_voice(payload.voice_id)
+    
+    # Persist the default voice to settings (properly merge nested structure)
+    from python.helpers import settings as settings_helper
+    current_settings = settings_helper.get_settings()
+    current_tts = current_settings.get("tts", {})
+    current_neutts = current_tts.get("neutts", {}) if isinstance(current_tts, dict) else {}
+    
+    # Update only the default_voice_id field while preserving other settings
+    updated_neutts = {**current_neutts, "default_voice_id": payload.voice_id}
+    updated_tts = {**current_tts, "neutts": updated_neutts}
+    
+    settings_helper.set_settings_delta({"tts": updated_tts})
+    
     return {"default_voice_id": payload.voice_id}
 
 
@@ -397,6 +410,52 @@ async def admin_memory_bulk_delete_endpoint(payload: MemoryBulkDeleteRequest) ->
     store = memory()
     deleted = await store.bulk_delete(payload.ids)
     return {"ok": True, "deleted": deleted}
+
+
+@router.post("/settings_get", tags=["Admin"])
+async def settings_get_endpoint() -> Dict[str, Any]:
+    """Get current settings for the web UI."""
+    from python.helpers import settings as settings_helper
+    return {"settings": settings_helper.convert_out(settings_helper.get_settings())}
+
+
+@router.post("/settings_set", tags=["Admin"])
+async def settings_set_endpoint(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Update settings from the web UI or programmatic calls."""
+    from python.helpers import settings as settings_helper
+    try:
+        # Detect format: UI format has "sections" key, raw format doesn't
+        if "sections" in payload:
+            # UI format: convert from sections/fields structure
+            normalized = settings_helper.normalize_settings(settings_helper.convert_in(payload))
+        else:
+            # Raw format: merge directly with current settings
+            current = settings_helper.get_settings()
+            # Deep merge the payload into current settings (cast to dict for type compatibility)
+            merged = _deep_merge_settings(dict(current), payload)
+            # normalize_settings expects a Settings dict but accepts Dict[str, Any]
+            normalized = settings_helper.normalize_settings(merged)  # type: ignore[arg-type]
+        
+        settings_helper.set_settings(normalized)
+        return {"settings": settings_helper.convert_out(settings_helper.get_settings())}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to update settings: {exc}"
+        ) from exc
+
+
+def _deep_merge_settings(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep merge update dict into base dict, handling nested structures properly."""
+    result = base.copy()
+    for key, value in update.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            # Recursively merge nested dicts
+            result[key] = _deep_merge_settings(result[key], value)
+        else:
+            # Overwrite with new value
+            result[key] = value
+    return result
 
 
 @router.get("/admin/health", tags=["Admin"], dependencies=[Depends(require_admin_auth)])

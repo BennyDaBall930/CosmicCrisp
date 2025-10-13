@@ -216,7 +216,46 @@ const settingsModalProxy = {
             const modalEl = document.getElementById('settingsModal');
             const modalAD = Alpine.$data(modalEl);
             try {
-                resp = await window.sendJsonData("/settings_set", modalAD.settings);
+                // Fetch fresh settings to preserve Voice Lab and other component changes
+                const freshSettings = await window.sendJsonData("/settings_get", null);
+                
+                if (freshSettings && freshSettings.settings && freshSettings.settings.sections) {
+                    // Merge modal values into fresh settings, EXCEPT for Voice Lab fields
+                    // Voice Lab manages TTS voice selection independently via its own persistence
+                    const voiceLabExcludedFields = new Set([
+                        'tts_active_voice_id',
+                        'tts_default_voice_id'
+                    ]);
+                    
+                    // Create map of modal values
+                    const modalFieldMap = new Map();
+                    for (const section of modalAD.settings.sections) {
+                        if (!modalFieldMap.has(section.title)) {
+                            modalFieldMap.set(section.title, new Map());
+                        }
+                        for (const field of section.fields) {
+                            modalFieldMap.get(section.title).set(field.id, field.value);
+                        }
+                    }
+                    
+                    // Apply modal values to fresh settings, excluding Voice Lab fields
+                    for (const section of freshSettings.settings.sections) {
+                        const sectionMap = modalFieldMap.get(section.title);
+                        if (sectionMap) {
+                            for (const field of section.fields) {
+                                // Skip Voice Lab managed fields - they have their own persistence
+                                if (!voiceLabExcludedFields.has(field.id) && sectionMap.has(field.id)) {
+                                    field.value = sectionMap.get(field.id);
+                                }
+                            }
+                        }
+                    }
+                    
+                    resp = await window.sendJsonData("/settings_set", freshSettings.settings);
+                } else {
+                    // Fallback if fresh settings fetch failed
+                    resp = await window.sendJsonData("/settings_set", modalAD.settings);
+                }
             } catch (e) {
                 window.toastFetchError("Error saving settings", e)
                 return

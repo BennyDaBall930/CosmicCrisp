@@ -31,11 +31,24 @@ async function persistSettings(patch) {
       ...patch,
     },
   };
-  await fetchApi("/settings_set", {
+  const response = await fetchApi("/settings_set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(next),
   });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    let errorMessage = `HTTP ${response.status}`;
+    try {
+      const errorJson = JSON.parse(errorText);
+      errorMessage = errorJson.detail || errorJson.error || errorMessage;
+    } catch (_) {
+      errorMessage = errorText || errorMessage;
+    }
+    throw new Error(`Failed to save settings: ${errorMessage}`);
+  }
+  
   return next;
 }
 
@@ -189,7 +202,8 @@ const model = {
     try {
       const settings = await loadSettings();
       const neutts = { ...(settings.tts?.neutts || {}), default_voice_id: voiceId };
-      await persistSettings({ stream_default: settings.tts?.stream_default ?? true, neutts });
+      // Just pass the nested neutts object - persistSettings will handle merging
+      await persistSettings({ neutts });
       await fetchApi("/runtime/tts/default", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
