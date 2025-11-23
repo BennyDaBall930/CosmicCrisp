@@ -143,7 +143,7 @@ echo -e "${GREEN}Starting Apple Zero UI Orchestrator...${NC}"
 echo ""
 
 # Print a short environment + dependency audit to simplify debugging
-echo -e "${YELLOW}Environment audit (NeuTTS):${NC}"
+echo -e "${YELLOW}Environment audit (Supertonic):${NC}"
 python3 - <<'PY'
 import os, sys
 def g(k, d=""):

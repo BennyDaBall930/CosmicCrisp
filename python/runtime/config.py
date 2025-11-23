@@ -34,7 +34,7 @@ DEFAULT_TOKEN_BUDGETS: Dict[str, int] = {
     "local-mlx": 8_192,
 }
 
-DEFAULT_TTS_SAMPLE_RATE = 24_000
+DEFAULT_TTS_SAMPLE_RATE = 44_100
 
 
 @dataclass(slots=True)
@@ -128,24 +128,19 @@ class RouterConfig:
 
 
 @dataclass(slots=True)
-class NeuTTSConfig:
-    backbone_repo: str = "neuphonic/neutts-air-q4-gguf"
-    codec_repo: str = "neuphonic/neucodec-onnx-decoder"
-    backbone_device: str = "mps"
-    codec_device: str = "cpu"
-    quality_default: str = "q4"
-    model_cache_dir: Path = Path("data/tts/neutts/models")
-    stream_chunk_seconds: float = 0.32
-    default_voice_id: Optional[str] = None
+class SupertonicConfig:
+    model_dir: Path = Path("data/tts/supertonic")
+    default_voice_id: str = "M1.json"
+    speed: float = 1.05
+    total_step: int = 5
 
 
 @dataclass(slots=True)
 class TTSConfig:
-    provider: str = "neutts"
+    provider: str = "supertonic"
     sample_rate: int = DEFAULT_TTS_SAMPLE_RATE
     stream_default: bool = True
-    neutts: NeuTTSConfig = field(default_factory=NeuTTSConfig)
-
+    supertonic: SupertonicConfig = field(default_factory=SupertonicConfig)
 
 
 @dataclass(slots=True)
@@ -544,13 +539,13 @@ def load_runtime_config() -> RuntimeConfig:
     )
 
     tts_section = _lookup(settings, "tts", default={})
-    neutts_section = _lookup(settings, "tts", "neutts", default={})
+    supertonic_section = _lookup(settings, "tts", "supertonic", default={})
     tts_provider = str(
         env.get(
             "TTS_PROVIDER",
-            tts_section.get("provider", "neutts") if isinstance(tts_section, Mapping) else "neutts",
+            tts_section.get("provider", "supertonic") if isinstance(tts_section, Mapping) else "supertonic",
         )
-    ).strip() or "neutts"
+    ).strip() or "supertonic"
     tts_sample_rate = _as_int(
         env.get(
             "TTS_SAMPLE_RATE",
@@ -565,86 +560,49 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         True,
     )
-    default_voice_raw = env.get(
-        "NEUTTS_DEFAULT_VOICE_ID",
-        _lookup(neutts_section, "default_voice_id", default=None) if isinstance(neutts_section, Mapping) else None,
-    )
-    if default_voice_raw is None:
-        default_voice_id = None
-    else:
-        _text = str(default_voice_raw).strip()
-        default_voice_id = None if _text.lower() in {"none", "null", "undefined", ""} else _text
-
-    neutts_config = NeuTTSConfig(
-        backbone_repo=str(
+    
+    supertonic_config = SupertonicConfig(
+        model_dir=Path(
             env.get(
-                "NEUTTS_BACKBONE_REPO",
-                _lookup(neutts_section, "backbone_repo", default="neuphonic/neutts-air-q4-gguf")
-                if isinstance(neutts_section, Mapping)
-                else "neuphonic/neutts-air-q4-gguf",
-            )
-        ).strip()
-        or "neuphonic/neutts-air-q4-gguf",
-        codec_repo=str(
-            env.get(
-                "NEUTTS_CODEC_REPO",
-                _lookup(neutts_section, "codec_repo", default="neuphonic/neucodec-onnx-decoder")
-                if isinstance(neutts_section, Mapping)
-                else "neuphonic/neucodec-onnx-decoder",
-            )
-        ).strip()
-        or "neuphonic/neucodec-onnx-decoder",
-        backbone_device=str(
-            env.get(
-                "NEUTTS_BACKBONE_DEVICE",
-                _lookup(neutts_section, "backbone_device", default="mps")
-                if isinstance(neutts_section, Mapping)
-                else "mps",
-            )
-        ).strip()
-        or "mps",
-        codec_device=str(
-            env.get(
-                "NEUTTS_CODEC_DEVICE",
-                _lookup(neutts_section, "codec_device", default="cpu")
-                if isinstance(neutts_section, Mapping)
-                else "cpu",
-            )
-        ).strip()
-        or "cpu",
-        quality_default=str(
-            env.get(
-                "NEUTTS_QUALITY_DEFAULT",
-                _lookup(neutts_section, "quality_default", default="q4")
-                if isinstance(neutts_section, Mapping)
-                else "q4",
-            )
-        ).strip()
-        or "q4",
-        model_cache_dir=Path(
-            env.get(
-                "NEUTTS_MODEL_CACHE_DIR",
-                _lookup(neutts_section, "model_cache_dir", default="data/tts/neutts/models")
-                if isinstance(neutts_section, Mapping)
-                else "data/tts/neutts/models",
+                "SUPERTONIC_MODEL_DIR",
+                _lookup(supertonic_section, "model_dir", default="data/tts/supertonic")
+                if isinstance(supertonic_section, Mapping)
+                else "data/tts/supertonic",
             )
         ).expanduser(),
-        stream_chunk_seconds=_as_float(
+        default_voice_id=str(
             env.get(
-                "NEUTTS_STREAM_CHUNK_SEC",
-                _lookup(neutts_section, "stream_chunk_seconds", default=0.32)
-                if isinstance(neutts_section, Mapping)
-                else 0.32,
+                "SUPERTONIC_DEFAULT_VOICE_ID",
+                _lookup(supertonic_section, "default_voice_id", default="M1.json")
+                if isinstance(supertonic_section, Mapping)
+                else "M1.json",
+            )
+        ).strip() or "M1.json",
+        speed=_as_float(
+            env.get(
+                "SUPERTONIC_SPEED",
+                _lookup(supertonic_section, "speed", default=1.05)
+                if isinstance(supertonic_section, Mapping)
+                else 1.05,
             ),
-            0.32,
+            1.05,
         ),
-        default_voice_id=default_voice_id,
+        total_step=_as_int(
+             env.get(
+                "SUPERTONIC_TOTAL_STEP",
+                _lookup(supertonic_section, "total_step", default=5)
+                if isinstance(supertonic_section, Mapping)
+                else 5,
+            ),
+            5,
+        ),
     )
+    
     tts = TTSConfig(
         provider=tts_provider,
         sample_rate=max(tts_sample_rate, 8_000),
         stream_default=tts_stream_default,
-        neutts=neutts_config,
+        supertonic=supertonic_config,
     )
 
     json_log_setting = env.get(
@@ -767,7 +725,7 @@ __all__ = [
     "RouterModelConfig",
     "RouterConfig",
     "TTSConfig",
-    "NeuTTSConfig",
+    "SupertonicConfig",
     "DEFAULT_TOKEN_BUDGETS",
     "DEFAULT_TTS_SAMPLE_RATE",
     "load_runtime_config",

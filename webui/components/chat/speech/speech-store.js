@@ -34,10 +34,10 @@ const model = {
   stt_waiting_timeout: 2000,
 
   // TTS Settings
-  tts_engine: "neutts",
+  tts_engine: "supertonic",
   tts_stream_default: true,
   tts_quality_default: "q4",
-  tts_sample_rate: 24000,
+  tts_sample_rate: 44100,
   tts_active_voice_id: null,
 
   // TTS State
@@ -63,11 +63,11 @@ const model = {
   },
 
   get ttsProvider() {
-    return (this.tts_engine || "neutts").toLowerCase();
+    return (this.tts_engine || "supertonic").toLowerCase();
   },
 
   get ttsUsesServerBackend() {
-    return this.ttsProvider === "neutts";
+    return this.ttsProvider === "supertonic";
   },
 
   updateMicrophoneButtonUI() {
@@ -751,7 +751,7 @@ const model = {
 
   // Show engine requirement banners when engines fail
   showEngineBanner(engine, error) {
-    const message = `NeuTTS-Air synthesis error (${engine || "neutts"}): ${error?.message || error}`;
+    const message = `TTS synthesis error (${engine || "supertonic"}): ${error?.message || error}`;
     if (window.toast) {
       window.toast(message, "warning", 8000);
     } else {
@@ -797,20 +797,30 @@ class MicrophoneInput {
     // Set status to activating at the start of initialization
     this.status = Status.ACTIVATING;
     try {
-      // get selected device from microphone settings
+      // First request basic permission to populate device list
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => stream.getTracks().forEach(track => track.stop()));
+      
+      // Load devices after permission granted
+      await microphoneSettingStore.loadDevices();
+      
+      // Now get selected device from microphone settings
       const selectedDevice = microphoneSettingStore.getSelectedDevice();
+      console.log("[STT] Using microphone device:", selectedDevice?.label || "default");
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const constraints = {
         audio: {
-          deviceId:
-            selectedDevice && selectedDevice.deviceId
-              ? { exact: selectedDevice.deviceId }
-              : undefined,
           echoCancellation: true,
           noiseSuppression: true,
           channelCount: 1,
-        },
-      });
+        }
+      };
+      
+      if (selectedDevice && selectedDevice.deviceId && selectedDevice.deviceId !== "default") {
+        constraints.audio.deviceId = { exact: selectedDevice.deviceId };
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
       this.mediaRecorder = new MediaRecorder(stream);
       this.mediaRecorder.ondataavailable = (event) => {

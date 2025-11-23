@@ -25,16 +25,15 @@ def encode_reference(ref_audio_path: str, ref_text: str, output_dir: str, voice_
     # Import neucodec (requires compatible environment)
     try:
         from neucodec import NeuCodec
-    except ImportError as e:
-        print("\n❌ ERROR: Failed to import neucodec")
-        print("This script requires a compatible environment with:")
-        print("  - transformers==4.30.0 (or compatible version)")
+    except Exception as e:
+        print(f"\n❌ ERROR: Failed to import neucodec: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        print("\nThis script requires a compatible environment with:")
+        print("  - transformers>=4.44.2 (required by neucodec)")
         print("  - neucodec")
-        print("  - torch, torchaudio, librosa")
-        print("\nCreate a separate environment:")
-        print("  python -m venv venv_encode")
-        print("  source venv_encode/bin/activate")
-        print("  pip install transformers==4.30.0 neucodec torch torchaudio librosa")
+        print("  - torch>=2.5.1, torchaudio, librosa")
         sys.exit(1)
     
     # Initialize codec

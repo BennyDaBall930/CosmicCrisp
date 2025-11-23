@@ -1,4 +1,4 @@
-from typing import Generator
+from typing import Generator, List
 from pathlib import Path
 import librosa
 import numpy as np
@@ -348,16 +348,31 @@ class NeuTTSAir:
         ref_text = self._to_phones(ref_text)
         input_text = self._to_phones(input_text)
 
-        codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
+        if isinstance(ref_codes, torch.Tensor):
+            ref_tokens: List[int] = [int(x) for x in ref_codes.detach().cpu().flatten().tolist()]
+        else:
+            ref_array = np.asarray(ref_codes, dtype=np.int32).flatten()
+            ref_tokens = [int(x) for x in ref_array.tolist()]
+
+        token_cache: List[int] = list(ref_tokens)
+        audio_cache: list[np.ndarray] = []
+        n_decoded_samples = 0
+        n_decoded_tokens = len(token_cache)
+        pending_text = ""
+        token_pattern = re.compile(r"<\|speech_(\d+)\|>")
+
+        def _decode_tokens(token_ids: List[int]) -> np.ndarray:
+            if not token_ids:
+                return np.zeros(0, dtype=np.float32)
+            codes_str = "".join(f"<|speech_{idx}|>" for idx in token_ids)
+            decoded = self._decode(codes_str)
+            return self.watermarker.apply_watermark(decoded, sample_rate=24_000)
+
         prompt = (
             f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
-            f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
+            f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>"
+            f"{''.join(f'<|speech_{idx}|>' for idx in ref_tokens)}"
         )
-
-        audio_cache: list[np.ndarray] = []
-        token_cache: list[str] = [f"<|speech_{idx}|>" for idx in ref_codes]
-        n_decoded_samples: int = 0
-        n_decoded_tokens: int = len(ref_codes)
 
         for item in self.backbone(
             prompt,
@@ -368,68 +383,81 @@ class NeuTTSAir:
             stream=True
         ):
             output_str = item["choices"][0]["text"]
-            token_cache.append(output_str)
+            if not output_str:
+                continue
 
-            if len(token_cache[n_decoded_tokens:]) >= self.streaming_frames_per_chunk + self.streaming_lookforward:
+            pending_text += output_str
+            last_consumed = 0
+            for match in token_pattern.finditer(pending_text):
+                token_cache.append(int(match.group(1)))
+                last_consumed = match.end()
 
-                # decode chunk
+            if last_consumed:
+                pending_text = pending_text[last_consumed:]
+            elif len(pending_text) > 128:
+                pending_text = pending_text[-128:]
+
+            while len(token_cache) - n_decoded_tokens >= self.streaming_frames_per_chunk + self.streaming_lookforward:
                 tokens_start = max(
                     n_decoded_tokens
                     - self.streaming_lookback
                     - self.streaming_overlap_frames,
                     0
                 )
-                tokens_end = (
+                tokens_end = min(
+                    len(token_cache),
                     n_decoded_tokens
                     + self.streaming_frames_per_chunk
                     + self.streaming_lookforward
                     + self.streaming_overlap_frames
                 )
-                sample_start = (
-                    n_decoded_tokens - tokens_start
-                ) * self.hop_length
-                sample_end = (
-                    sample_start
-                    + (self.streaming_frames_per_chunk + 2 * self.streaming_overlap_frames) * self.hop_length
-                )
-                curr_codes = token_cache[tokens_start:tokens_end]
-                recon = self._decode("".join(curr_codes))
-                recon = self.watermarker.apply_watermark(recon, sample_rate=24_000)
+                token_slice = token_cache[tokens_start:tokens_end]
+                if not token_slice:
+                    break
+
+                recon = _decode_tokens(token_slice)
+                if recon.size == 0:
+                    break
+
+                sample_start = (n_decoded_tokens - tokens_start) * self.hop_length
+                sample_end = sample_start + (self.streaming_frames_per_chunk + 2 * self.streaming_overlap_frames) * self.hop_length
                 recon = recon[sample_start:sample_end]
                 audio_cache.append(recon)
 
-                # postprocess
                 processed_recon = _linear_overlap_add(
                     audio_cache, stride=self.streaming_stride_samples
                 )
                 new_samples_end = len(audio_cache) * self.streaming_stride_samples
-                processed_recon = processed_recon[
-                    n_decoded_samples:new_samples_end
-                ]
+                processed_recon = processed_recon[n_decoded_samples:new_samples_end]
                 n_decoded_samples = new_samples_end
                 n_decoded_tokens += self.streaming_frames_per_chunk
-                yield processed_recon
 
-        # final decoding handled seperately as non-constant chunk size
+                chunk_audio = processed_recon.astype(np.float32, copy=False)
+                if chunk_audio.size:
+                    yield chunk_audio
+
         remaining_tokens = len(token_cache) - n_decoded_tokens
-        if len(token_cache) > n_decoded_tokens:
+        if remaining_tokens > 0:
             tokens_start = max(
                 len(token_cache)
-                - (self.streaming_lookback + self.streaming_overlap_frames + remaining_tokens), 
+                - (self.streaming_lookback + self.streaming_overlap_frames + remaining_tokens),
                 0
             )
-            sample_start = (
-                len(token_cache) 
-                - tokens_start 
-                - remaining_tokens 
-                - self.streaming_overlap_frames
-            ) * self.hop_length
-            curr_codes = token_cache[tokens_start:]
-            recon = self._decode("".join(curr_codes))
-            recon = self.watermarker.apply_watermark(recon, sample_rate=24_000)
-            recon = recon[sample_start:]
-            audio_cache.append(recon)
+            token_slice = token_cache[tokens_start:]
+            recon = _decode_tokens(token_slice)
+            if recon.size:
+                sample_start = (
+                    len(token_cache)
+                    - tokens_start
+                    - remaining_tokens
+                    - self.streaming_overlap_frames
+                ) * self.hop_length
+                sample_start = max(int(sample_start), 0)
+                recon = recon[sample_start:]
+                audio_cache.append(recon)
 
-            processed_recon = _linear_overlap_add(audio_cache, stride=self.streaming_stride_samples)
-            processed_recon = processed_recon[n_decoded_samples:]
-            yield processed_recon
+                processed_recon = _linear_overlap_add(audio_cache, stride=self.streaming_stride_samples)
+                processed_recon = processed_recon[n_decoded_samples:]
+                chunk_audio = processed_recon.astype(np.float32, copy=False)
+                if chunk_audio.size:
+                    yield chunk_audio

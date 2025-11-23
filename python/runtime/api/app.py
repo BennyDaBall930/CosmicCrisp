@@ -37,7 +37,7 @@ TAGS_METADATA = [
     {"name": "Tools", "description": "Tool discovery and invocation."},
     {"name": "Events", "description": "Server-sent events and notifications."},
     {"name": "Admin", "description": "Administrative APIs."},
-    {"name": "TTS", "description": "NeuTTS-Air streaming speech synthesis."},
+    {"name": "TTS", "description": "Supertonic streaming speech synthesis."},
 ]
 
 app = FastAPI(title="Apple Zero Runtime API", version="0.1.0", openapi_tags=TAGS_METADATA)
@@ -235,10 +235,19 @@ async def tts_create_voice(payload: TTSVoiceCreateRequest) -> Dict[str, Any]:
     provider = get_tts_provider()
     try:
         audio_bytes = base64.b64decode(payload.audio_base64)
-    except (binascii.Error, ValueError) as exc:
+    except (binascii.Error, ValueError) as exc:  # pragma: no cover
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid base64 audio: {exc}") from exc
+    
+    # Check if audio is already in WAV format
+    if audio_bytes.startswith(b"RIFF"):
+        # Already a WAV file, pass through directly
+        wav_bytes = audio_bytes
+    else:
+        # Convert to WAV format with proper headers
+        wav_bytes = _wrap_wav(audio_bytes, 44100)
+    
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
-        tmp_wav.write(audio_bytes)
+        tmp_wav.write(wav_bytes)
         tmp_wav.flush()
         tmp_path = tmp_wav.name
     try:
@@ -279,11 +288,11 @@ async def tts_set_default(payload: TTSDefaultRequest) -> Dict[str, Any]:
     from python.helpers import settings as settings_helper
     current_settings = settings_helper.get_settings()
     current_tts = current_settings.get("tts", {})
-    current_neutts = current_tts.get("neutts", {}) if isinstance(current_tts, dict) else {}
+    current_supertonic = current_tts.get("supertonic", {}) if isinstance(current_tts, dict) else {}
     
     # Update only the default_voice_id field while preserving other settings
-    updated_neutts = {**current_neutts, "default_voice_id": payload.voice_id}
-    updated_tts = {**current_tts, "neutts": updated_neutts}
+    updated_supertonic = {**current_supertonic, "default_voice_id": payload.voice_id}
+    updated_tts = {**current_tts, "supertonic": updated_supertonic}
     
     settings_helper.set_settings_delta({"tts": updated_tts})
     
@@ -310,11 +319,11 @@ async def tts_speak(payload: TTSSpeakRequest) -> Response:
 
     meta = provider.last_output_metadata
     headers = {
-        "X-NeuTTS-Voice-Id": str(meta.get("voice_id", "")),
-        "X-NeuTTS-Watermarked": "true" if meta.get("watermarked") else "false",
-        "X-NeuTTS-Quality": str(meta.get("quality", "")),
-        "X-NeuTTS-Duration": str(meta.get("duration", "")),
-        "X-NeuTTS-Sample-Rate": str(cfg.sample_rate),
+        "X-Supertonic-Voice-Id": str(meta.get("voice_id", "")),
+        "X-Supertonic-Watermarked": "true" if meta.get("watermarked") else "false",
+        "X-Supertonic-Quality": str(meta.get("quality", "")),
+        "X-Supertonic-Duration": str(meta.get("duration", "")),
+        "X-Supertonic-Sample-Rate": str(cfg.sample_rate),
     }
     if payload.stream and isinstance(result, Iterable) and not isinstance(result, (bytes, bytearray)):
         stream_iterable = _stream_wav(result, cfg.sample_rate)

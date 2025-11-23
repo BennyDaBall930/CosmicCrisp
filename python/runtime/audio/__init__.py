@@ -20,8 +20,8 @@ class TTSProvider(Protocol):
         ...
 
 
-from .neutts_provider import NeuttsProvider  # noqa: E402
+from .supertonic_provider import SupertonicProvider  # noqa: E402
 
-PROVIDERS = {"neutts": NeuttsProvider}
+PROVIDERS = {"supertonic": SupertonicProvider}
 
-__all__ = ["TTSProvider", "NeuttsProvider", "PROVIDERS"]
+__all__ = ["TTSProvider", "SupertonicProvider", "PROVIDERS"]

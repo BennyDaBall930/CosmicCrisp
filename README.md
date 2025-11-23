@@ -53,7 +53,7 @@ User Request 🚀 → Web UI/CLI → FastAPI Gateway → Container Runtime
 ## 🎯 Key Features
 
 ### 🧠 Smart Memory System
-Our hybrid memory combines local SQLite + vector search with optional Mem0 for that extra brain boost!
+Our hybrid memory combines local SQLite + vector search for efficient context management and recall.
 
 ### 🗣️ Chatterbox TTS
 Gone are the days of robotic voices! Apple Zero speaks like a human... most of the time. (We're working on improving latency...)
@@ -62,7 +62,7 @@ Gone are the days of robotic voices! Apple Zero speaks like a human... most of t
 Browser automation? ✓ Code execution? ✓ File operations? ✓ Email sending? ✓ Database queries? ✓
 
 ### 🔄 Model Router
-Automatically picks the best AI model for your task. Efficient as hell, expensive as heaven.
+Configurable model selection for different AI providers. Supports OpenAI, Anthropic, Google Gemini, and local models via LM Studio/Ollama.
 
 ### 📊 Live Observability
 Track everything with metrics, logs, and shiny dashboards. Because who doesn't love graphs?

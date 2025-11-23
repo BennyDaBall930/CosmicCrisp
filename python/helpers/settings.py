@@ -13,22 +13,18 @@ from python.helpers.print_style import PrintStyle
 from python.helpers.providers import get_providers
 
 
-class NeuTTSSettings(TypedDict, total=False):
-    backbone_repo: str
-    codec_repo: str
-    backbone_device: str
-    codec_device: str
-    model_cache_dir: str
-    quality_default: Literal["q4", "q8"]
+class SupertonicSettings(TypedDict, total=False):
+    model_dir: str
     default_voice_id: Optional[str]
-    stream_chunk_seconds: float
+    speed: float
+    total_step: int
 
 
 class TTSSettings(TypedDict):
-    provider: Literal["neutts"]
+    provider: Literal["supertonic"]
     sample_rate: int
     stream_default: bool
-    neutts: NeuTTSSettings
+    supertonic: SupertonicSettings
 
 
 class Settings(TypedDict):
@@ -1023,56 +1019,45 @@ def convert_out(settings: Settings) -> SettingsOutput:
         }
     )
 
-    # TTS fields (NeuTTS-Air only)
+    # TTS fields (Supertonic)
     tts_settings = settings["tts"]
-    neutts_settings = tts_settings.get("neutts", {}) if isinstance(tts_settings, dict) else {}
-    provider_label = "NeuTTS-Air (Metal accelerated)"
+    supertonic_settings = tts_settings.get("supertonic", {}) if isinstance(tts_settings, dict) else {}
+    provider_label = "Supertonic"
 
     tts_fields: list[SettingsField] = [
         {
             "id": "tts_provider_readonly",
             "title": "Speech synthesis provider",
-            "description": "NeuTTS-Air runs locally with perceptual watermarking enabled.",
+            "description": "Supertonic runs locally using ONNX Runtime.",
             "type": "html",
             "value": f"<strong>{provider_label}</strong> is always active. Manage custom voices from the Voice Lab panel.",
         },
         {
             "id": "tts_stream_default",
             "title": "Streaming synthesis",
-            "description": "Stream audio in ~300 ms chunks for sub-500 ms time-to-first-audio (recommended).",
+            "description": "Stream audio chunks for faster playback.",
             "type": "switch",
             "value": bool(tts_settings.get("stream_default", True)),
         },
         {
-            "id": "tts_quality_default",
-            "title": "Default quality",
-            "description": "Q4 for maximum responsiveness, Q8 for higher fidelity (requires more VRAM).",
-            "type": "select",
-            "value": neutts_settings.get("quality_default", "q4"),
-            "options": [
-                {"value": "q4", "label": "Q4 (fast)"},
-                {"value": "q8", "label": "Q8 (high fidelity)"},
-            ],
-        },
-        {
             "id": "tts_sample_rate",
             "title": "Sample rate (Hz)",
-            "description": "NeuTTS-Air produces 24 kHz audio by default.",
+            "description": "Supertonic produces 44.1 kHz audio by default.",
             "type": "number",
-            "value": tts_settings.get("sample_rate", 24_000),
+            "value": tts_settings.get("sample_rate", 44_100),
         },
         {
             "id": "tts_active_voice_id",
             "title": "Default voice",
-            "description": "Internal field storing the default NeuTTS voice id.",
+            "description": "Internal field storing the default Supertonic voice id.",
             "type": "text",
-            "value": neutts_settings.get("default_voice_id"),
+            "value": supertonic_settings.get("default_voice_id"),
             "hidden": True,
         },
         {
             "id": "tts_voice_lab_component",
             "title": "Voice Lab",
-            "description": "Create, clone, and manage NeuTTS voices.",
+            "description": "Create, clone, and manage Supertonic voices.",
             "type": "html",
             "value": "<x-component path='/settings/speech/voice-lab.html' />",
         },
@@ -1501,7 +1486,7 @@ def normalize_settings(settings: Settings) -> Settings:
                 copy[key] = value
 
     # ensure TTS subsection is normalised
-    copy["tts"] = _normalize_tts_settings(copy.get("tts", {}), default["tts"])
+    copy["tts"] = cast(TTSSettings, _normalize_tts_settings(cast(dict[str, Any], copy.get("tts", {})), cast(dict[str, Any], default["tts"])))
 
     # mcp server token regenerated per load
     copy["mcp_server_token"] = create_auth_token()
@@ -1511,80 +1496,73 @@ def normalize_settings(settings: Settings) -> Settings:
 def _apply_tts_field(settings_dict: Settings, field_id: str, value: Any) -> None:
     default_tts = get_default_settings()["tts"]
     current_tts = settings_dict.get("tts") or {}
-    neutts_default = default_tts.get("neutts", {})
-    neutts_current = current_tts.get("neutts") if isinstance(current_tts, dict) else {}
+    supertonic_default = default_tts.get("supertonic", {})
+    supertonic_current = current_tts.get("supertonic") if isinstance(current_tts, dict) else {}
 
-    merged_neutts: dict[str, Any] = {**neutts_default}
-    if isinstance(neutts_current, dict):
-        for key, current_val in neutts_current.items():
-            merged_neutts[key] = current_val
+    merged_supertonic: dict[str, Any] = {**supertonic_default}
+    if isinstance(supertonic_current, dict):
+        for key, current_val in supertonic_current.items():
+            merged_supertonic[key] = current_val
 
     merged: dict[str, Any] = {
         "provider": str(current_tts.get("provider", default_tts["provider"])) if isinstance(current_tts, dict) else default_tts["provider"],
         "sample_rate": _parse_int(current_tts.get("sample_rate") if isinstance(current_tts, dict) else None, default_tts["sample_rate"]),
         "stream_default": _parse_bool(current_tts.get("stream_default") if isinstance(current_tts, dict) else None, default_tts["stream_default"]),
-        "neutts": merged_neutts,
+        "supertonic": merged_supertonic,
     }
 
     if field_id == "tts_stream_default":
         merged["stream_default"] = _parse_bool(value, default_tts["stream_default"])
-    elif field_id == "tts_quality_default":
-        quality = str(value).strip().lower() if isinstance(value, str) else str(value).lower()
-        if quality in {"q4", "q8"}:
-            merged_neutts["quality_default"] = quality
-        else:
-            merged_neutts["quality_default"] = neutts_default.get("quality_default", "q4")
     elif field_id == "tts_sample_rate":
         merged["sample_rate"] = _parse_int(value, default_tts["sample_rate"])
     elif field_id == "tts_active_voice_id":
         if value is None:
-            merged_neutts["default_voice_id"] = None
+            merged_supertonic["default_voice_id"] = None
         else:
             text = str(value).strip()
-            merged_neutts["default_voice_id"] = None if text.lower() in {"none", "null", "undefined", ""} else text
+            merged_supertonic["default_voice_id"] = None if text.lower() in {"none", "null", "undefined", ""} else text
 
-    merged["provider"] = "neutts"
+    merged["provider"] = "supertonic"
     settings_dict["tts"] = merged  # type: ignore
 
 
 def _normalize_tts_settings(value: dict[str, Any], default: dict[str, Any]) -> dict[str, Any]:
-    provider = str(value.get("provider") if isinstance(value, dict) else default.get("provider", "neutts")).strip().lower() or "neutts"
-    sample_rate = _parse_int(value.get("sample_rate") if isinstance(value, dict) else None, default.get("sample_rate", 24_000))
+    provider = str(value.get("provider") if isinstance(value, dict) else default.get("provider", "supertonic")).strip().lower() or "supertonic"
+    sample_rate = _parse_int(value.get("sample_rate") if isinstance(value, dict) else None, default.get("sample_rate", 44_100))
     stream_default = _parse_bool(value.get("stream_default") if isinstance(value, dict) else None, default.get("stream_default", True))
 
-    neutts_default = default.get("neutts", {}) if isinstance(default, dict) else {}
-    incoming_neutts = value.get("neutts") if isinstance(value, dict) else {}
-    normalized_neutts: dict[str, Any] = {**neutts_default}
+    supertonic_default = default.get("supertonic", {}) if isinstance(default, dict) else {}
+    incoming_supertonic = value.get("supertonic") if isinstance(value, dict) else {}
+    normalized_supertonic: dict[str, Any] = {**supertonic_default}
 
-    if isinstance(incoming_neutts, dict):
-        for key, default_val in neutts_default.items():
-            raw = incoming_neutts.get(key, default_val)
-            if key in {"backbone_repo", "codec_repo", "backbone_device", "codec_device", "model_cache_dir"}:
-                normalized_neutts[key] = str(raw).strip() if isinstance(raw, str) and raw.strip() else default_val
-            elif key == "quality_default":
-                candidate = str(raw).strip().lower() if isinstance(raw, str) else str(raw).lower()
-                normalized_neutts[key] = candidate if candidate in {"q4", "q8"} else neutts_default.get("quality_default", "q4")
+    if isinstance(incoming_supertonic, dict):
+        for key, default_val in supertonic_default.items():
+            raw = incoming_supertonic.get(key, default_val)
+            if key == "model_dir":
+                normalized_supertonic[key] = str(raw).strip() if isinstance(raw, str) and raw.strip() else default_val
             elif key == "default_voice_id":
                 if raw is None:
-                    normalized_neutts[key] = None
+                    normalized_supertonic[key] = None
                 else:
                     text = str(raw).strip()
                     if text.lower() in {"none", "null", "undefined", ""}:
-                        normalized_neutts[key] = None
+                        normalized_supertonic[key] = None
                     else:
-                        normalized_neutts[key] = text
-            elif key == "stream_chunk_seconds":
-                normalized_neutts[key] = _parse_float(raw, float(neutts_default.get("stream_chunk_seconds", 0.32)))
+                        normalized_supertonic[key] = text
+            elif key == "speed":
+                normalized_supertonic[key] = _parse_float(raw, float(supertonic_default.get("speed", 1.05)))
+            elif key == "total_step":
+                normalized_supertonic[key] = _parse_int(raw, int(supertonic_default.get("total_step", 5)))
             else:
-                normalized_neutts[key] = raw if raw is not None else default_val
+                normalized_supertonic[key] = raw if raw is not None else default_val
     else:
-        normalized_neutts = {**neutts_default}
+        normalized_supertonic = {**supertonic_default}
 
     return {
-        "provider": provider or "neutts",
+        "provider": provider or "supertonic",
         "sample_rate": max(sample_rate, 8_000),
         "stream_default": stream_default,
-        "neutts": normalized_neutts,
+        "supertonic": normalized_supertonic,
     }
 
 
@@ -1751,23 +1729,19 @@ def get_default_settings() -> Settings:
         stt_model_size="base",
         stt_language="en",
         stt_silence_threshold=0.3,
-        stt_silence_duration=1000,
-        stt_waiting_timeout=2000,
-        tts={
-            "provider": "neutts",
-            "sample_rate": 24_000,
-            "stream_default": True,
-            "neutts": {
-                "backbone_repo": "neuphonic/neutts-air-q4-gguf",
-                "codec_repo": "neuphonic/neucodec-onnx-decoder",
-                "backbone_device": "mps",
-                "codec_device": "cpu",
-                "model_cache_dir": "data/tts/neutts/models",
-                "quality_default": "q4",
-                "default_voice_id": None,
-                "stream_chunk_seconds": 0.32,
-            },
+    stt_silence_duration=1000,
+    stt_waiting_timeout=2000,
+    tts={
+        "provider": "supertonic",
+        "sample_rate": 44_100,
+        "stream_default": True,
+        "supertonic": {
+            "model_dir": "data/tts/supertonic",
+            "default_voice_id": "M1.json",
+            "speed": 1.05,
+            "total_step": 5,
         },
+    },
         mcp_servers='{\n    "mcpServers": {}\n}',
         mcp_client_init_timeout=10,
         mcp_client_tool_timeout=120,

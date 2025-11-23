@@ -139,21 +139,19 @@ def get_tts_provider():
     provider_cls = PROVIDERS.get(cfg.provider.lower())
     if provider_cls is None:
         raise RuntimeError(f"Unsupported TTS provider '{cfg.provider}'")
-    neutts_cfg = cfg.neutts
-    model_cache_dir = neutts_cfg.model_cache_dir.expanduser()
-    data_root = model_cache_dir.parent
-    return provider_cls(
-        backbone_repo=neutts_cfg.backbone_repo,
-        codec_repo=neutts_cfg.codec_repo,
-        backbone_device=neutts_cfg.backbone_device,
-        codec_device=neutts_cfg.codec_device,
-        model_cache_dir=model_cache_dir,
-        stream_chunk_seconds=neutts_cfg.stream_chunk_seconds,
-        sample_rate=cfg.sample_rate,
-        quality_default=neutts_cfg.quality_default,
-        default_voice_id=neutts_cfg.default_voice_id,
-        data_root=data_root,
-    )
+    
+    if cfg.provider.lower() == "supertonic":
+        supertonic_cfg = cfg.supertonic
+        return provider_cls(
+            model_dir=supertonic_cfg.model_dir,
+            default_voice_id=supertonic_cfg.default_voice_id,
+            speed=supertonic_cfg.speed,
+            total_step=supertonic_cfg.total_step,
+            sample_rate=cfg.sample_rate,
+        )
+
+    # Fallback or legacy support if needed (though we're replacing NeuTTS)
+    raise RuntimeError(f"Provider setup not implemented for '{cfg.provider}'")
 
 
 embeddings = _LazyProxy(get_embeddings_service)
