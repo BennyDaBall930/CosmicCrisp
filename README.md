@@ -553,3 +553,7 @@ This project inherits the wonderful MIT license from the original Cosmic Crisp /
 <small>"Because who needs boring, when you can have brilliant?" - Apple Zero Team</small>
 
 </div>
+
+**Follow me on X [@BennyDaBall_OG](https://x.com/BennyDaBall_OG) !**
+
+**Want to support my work? Buy me a coffee on [Ko-fi](https://ko-fi.com/bennydaball) !**
